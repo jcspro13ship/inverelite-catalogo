@@ -4,19 +4,61 @@
 
 const { useState, useMemo, useEffect, useCallback } = React;
 
-// Iconos lucide-react (UMD)
-const LR = window.LucideReact || window['lucide-react'] || {};
-const Search = LR.Search, Package = LR.Package, FileText = LR.FileText,
-  Share2 = LR.Share2, Download = LR.Download, Plus = LR.Plus, Minus = LR.Minus,
-  Trash2 = LR.Trash2, X = LR.X, Check = LR.Check, MessageCircle = LR.MessageCircle,
-  Copy = LR.Copy, Tag = LR.Tag, User = LR.User, Lock = LR.Lock, LogOut = LR.LogOut,
-  Info = LR.Info, Printer = LR.Printer, Syringe = LR.Syringe, Droplet = LR.Droplet,
-  Beaker = LR.Beaker, Pill = LR.Pill, FileCheck = LR.FileCheck, List = LR.List,
-  LayoutGrid = LR.LayoutGrid, Eye = LR.Eye, Menu = LR.Menu, ShoppingCart = LR.ShoppingCart,
-  FlaskConical = LR.FlaskConical, Sparkles = LR.Sparkles, Archive = LR.Archive,
-  Wrench = LR.Wrench, Building2 = LR.Building2, AlertCircle = LR.AlertCircle,
-  Leaf = LR.Leaf, Heart = LR.Heart, Shield = LR.Shield, Zap = LR.Zap, Box = LR.Box,
-  RefreshCw = LR.RefreshCw;
+// Iconos: usamos lucide (vainilla) que expone window.lucide.icons
+// Cada ícono es un array [tag, attrs, children] que convertimos a SVG
+const LU = (window.lucide && window.lucide.icons) || {};
+
+function makeIcon(iconName) {
+  // Devuelve un componente React que renderiza el SVG del ícono
+  return function IconComp({ size = 24, color = 'currentColor', strokeWidth = 2, style = {}, className = '' }) {
+    const data = LU[iconName];
+    if (!data) {
+      // Fallback: un cuadrado vacío
+      return <svg width={size} height={size} viewBox="0 0 24 24" />;
+    }
+    // data es [tag, attrs, children] o array de [tag, attrs] para los hijos
+    const children = Array.isArray(data[2]) ? data[2] : [];
+    return (
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        style={style}
+        className={className}
+      >
+        {children.map((child, i) => {
+          const [tag, attrs] = child;
+          return React.createElement(tag, { key: i, ...attrs });
+        })}
+      </svg>
+    );
+  };
+}
+
+const Search = makeIcon('Search'), Package = makeIcon('Package'),
+  FileText = makeIcon('FileText'), Share2 = makeIcon('Share2'),
+  Download = makeIcon('Download'), Plus = makeIcon('Plus'),
+  Minus = makeIcon('Minus'), Trash2 = makeIcon('Trash2'),
+  X = makeIcon('X'), Check = makeIcon('Check'),
+  MessageCircle = makeIcon('MessageCircle'), Copy = makeIcon('Copy'),
+  Tag = makeIcon('Tag'), User = makeIcon('User'), Lock = makeIcon('Lock'),
+  LogOut = makeIcon('LogOut'), Info = makeIcon('Info'), Printer = makeIcon('Printer'),
+  Syringe = makeIcon('Syringe'), Droplet = makeIcon('Droplet'),
+  Beaker = makeIcon('Beaker'), Pill = makeIcon('Pill'),
+  FileCheck = makeIcon('FileCheck'), List = makeIcon('List'),
+  LayoutGrid = makeIcon('LayoutGrid'), Eye = makeIcon('Eye'),
+  Menu = makeIcon('Menu'), ShoppingCart = makeIcon('ShoppingCart'),
+  FlaskConical = makeIcon('FlaskConical'), Sparkles = makeIcon('Sparkles'),
+  Archive = makeIcon('Archive'), Wrench = makeIcon('Wrench'),
+  Building2 = makeIcon('Building2'), AlertCircle = makeIcon('AlertCircle'),
+  Leaf = makeIcon('Leaf'), Heart = makeIcon('Heart'),
+  Shield = makeIcon('Shield'), Zap = makeIcon('Zap'),
+  Box = makeIcon('Box'), RefreshCw = makeIcon('RefreshCw');
 
 const ICONS = {
   syringe: Syringe, pill: Pill, beaker: Beaker, droplet: Droplet,
