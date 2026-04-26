@@ -1,0 +1,1517 @@
+// =====================================================================
+// InverElite App — Lee datos en tiempo real desde Google Sheets
+// =====================================================================
+
+const { useState, useMemo, useEffect, useCallback } = React;
+
+// Iconos lucide-react (UMD)
+const LR = window.LucideReact || window['lucide-react'] || {};
+const Search = LR.Search, Package = LR.Package, FileText = LR.FileText,
+  Share2 = LR.Share2, Download = LR.Download, Plus = LR.Plus, Minus = LR.Minus,
+  Trash2 = LR.Trash2, X = LR.X, Check = LR.Check, MessageCircle = LR.MessageCircle,
+  Copy = LR.Copy, Tag = LR.Tag, User = LR.User, Lock = LR.Lock, LogOut = LR.LogOut,
+  Info = LR.Info, Printer = LR.Printer, Syringe = LR.Syringe, Droplet = LR.Droplet,
+  Beaker = LR.Beaker, Pill = LR.Pill, FileCheck = LR.FileCheck, List = LR.List,
+  LayoutGrid = LR.LayoutGrid, Eye = LR.Eye, Menu = LR.Menu, ShoppingCart = LR.ShoppingCart,
+  FlaskConical = LR.FlaskConical, Sparkles = LR.Sparkles, Archive = LR.Archive,
+  Wrench = LR.Wrench, Building2 = LR.Building2, AlertCircle = LR.AlertCircle,
+  Leaf = LR.Leaf, Heart = LR.Heart, Shield = LR.Shield, Zap = LR.Zap, Box = LR.Box,
+  RefreshCw = LR.RefreshCw;
+
+const ICONS = {
+  syringe: Syringe, pill: Pill, beaker: Beaker, droplet: Droplet,
+  sparkles: Sparkles, archive: Archive, flask: FlaskConical,
+  'flask-conical': FlaskConical, wrench: Wrench, package: Package,
+  leaf: Leaf, heart: Heart, shield: Shield, zap: Zap, box: Box,
+};
+const getIcon = (name) => ICONS[name] || Package;
+
+// Brand
+const C = {
+  navyDeep: '#0F1E3D', navy: '#1A2B4F', navySoft: '#2D3E5F',
+  gold: '#C9A449', goldSoft: '#E4C879', goldDim: '#A8882A',
+  cream: '#FAF7F0', paper: '#FFFEFB', ink: '#1A1A1A',
+  muted: '#6B6B6B', border: '#E8E3D8', borderSoft: '#F0EBDF',
+};
+
+const PRICE_LISTS = [
+  { key: 'pub', label: 'Público' },
+  { key: 'vet', label: 'Veterinario' },
+  { key: 'pv', label: 'Punto de Venta' },
+];
+
+// Helpers
+const formatCOP = (n) =>
+  '$ ' + Math.round(n || 0).toLocaleString('es-CO', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+
+const calcVet = (pub, m) => Math.round(pub * (1 - m / 100));
+
+const getPrice = (p, listKey, mVet) => {
+  if (listKey === 'pv') return p.pv;
+  if (listKey === 'vet') return calcVet(p.pub, mVet || 5);
+  return p.pub;
+};
+
+const normalizePhotoURL = (url) => {
+  if (!url) return null;
+  url = String(url).trim();
+  if (!url) return null;
+  const m = url.match(/\/d\/([^\/]+)/);
+  if (m) return 'https://drive.google.com/uc?export=view&id=' + m[1];
+  return url;
+};
+
+// Logo
+const Logo = ({ size = 40, showText = true }) => (
+  <div className="flex items-center gap-3">
+    <svg width={size} height={size} viewBox="0 0 100 100">
+      <rect x="4" y="4" width="92" height="92" rx="18" fill={C.navyDeep} />
+      <text x="50" y="60" textAnchor="middle" fontFamily="'Fraunces', serif"
+        fontWeight="700" fontSize="40" fill={C.gold} letterSpacing="2">IE</text>
+      <line x1="32" y1="74" x2="68" y2="74" stroke={C.gold} strokeWidth="2" />
+    </svg>
+    {showText && (
+      <span style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep }}
+        className="text-xl font-semibold tracking-tight">InverElite</span>
+    )}
+  </div>
+);
+
+// Data Loader
+async function fetchCSV(url) {
+  const resp = await fetch(url + '&_t=' + Date.now());
+  const text = await resp.text();
+  return new Promise((resolve, reject) => {
+    Papa.parse(text, {
+      header: true, skipEmptyLines: true,
+      complete: (r) => resolve(r.data), error: reject,
+    });
+  });
+}
+
+async function loadAllData() {
+  const cfg = window.INVERELITE_CONFIG;
+  if (!cfg || !cfg.URL_PRODUCTOS || cfg.URL_PRODUCTOS.includes('PEGAR_AQUI')) {
+    throw new Error('CONFIG_MISSING');
+  }
+  const [productosRaw, categoriasRaw, configRaw] = await Promise.all([
+    fetchCSV(cfg.URL_PRODUCTOS),
+    fetchCSV(cfg.URL_CATEGORIAS),
+    fetchCSV(cfg.URL_CONFIG),
+  ]);
+
+  const productos = productosRaw
+    .filter(p => (p.Activo || '').toUpperCase() === 'SI' && p.ID)
+    .map(p => ({
+      id: p.ID,
+      nombre: p.Nombre || '',
+      proveedor: p.Proveedor || '',
+      marca: p.Marca || '',
+      categoria: p.Categoria || '',
+      presentacion: p.Presentacion || '',
+      pv: parseInt((p.Precio_PV || '0').toString().replace(/[^0-9]/g, '')) || 0,
+      pub: parseInt((p.Precio_Pub || '0').toString().replace(/[^0-9]/g, '')) || 0,
+      iva: parseInt(p.IVA_Incluido || p.IVA || '0') || 0,
+      descComercial: p.Descripcion_Comercial || '',
+      descTecnica: p.Descripcion_Tecnica || '',
+      foto: normalizePhotoURL(p.Foto_URL),
+    }));
+
+  const categorias = categoriasRaw
+    .filter(c => c.key)
+    .map(c => ({
+      key: c.key, nombre: c.nombre || c.key,
+      orden: parseInt(c.orden || '99'),
+      color: c.color || '#666666',
+      icono: c.icono || 'package',
+    }))
+    .sort((a, b) => a.orden - b.orden);
+
+  const config = {};
+  configRaw.forEach(row => {
+    if (row.clave) config[row.clave] = row.valor || '';
+  });
+
+  return { productos, categorias, config };
+}
+
+// Toast
+const Toast = ({ message, show }) => (
+  <div className={`fixed bottom-6 left-1/2 z-[100] transition-all duration-300 ${
+    show ? 'opacity-100' : 'opacity-0 pointer-events-none'
+  }`} style={{ transform: 'translateX(-50%)' }}>
+    <div className="flex items-center gap-2 px-5 py-3 rounded-full shadow-lg"
+      style={{ backgroundColor: C.navyDeep, color: C.paper }}>
+      <Check size={16} style={{ color: C.gold }} />
+      <span className="text-sm font-medium">{message}</span>
+    </div>
+  </div>
+);
+
+// Product Visual
+function ProductVisual({ producto, categoria, size = 'md' }) {
+  const heights = { sm: 'h-32', md: 'h-44', lg: 'h-72' };
+  const [imgError, setImgError] = useState(false);
+  const cat = categoria || { color: '#666', icono: 'package', nombre: '' };
+  const IconComp = getIcon(cat.icono);
+
+  if (producto.foto && !imgError) {
+    return (
+      <div className={`${heights[size]} w-full relative overflow-hidden`}
+        style={{ backgroundColor: C.cream }}>
+        <img src={producto.foto} alt={producto.nombre}
+          className="w-full h-full object-contain" style={{ padding: '12px' }}
+          onError={() => setImgError(true)} loading="lazy" />
+        <div className="absolute top-3 left-3">
+          <span className="text-[10px] font-semibold tracking-wider uppercase px-2 py-1 rounded-full"
+            style={{ backgroundColor: 'rgba(255,255,255,0.9)', color: cat.color }}>
+            {cat.nombre}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`${heights[size]} w-full relative overflow-hidden flex items-center justify-center`}
+      style={{ background: `linear-gradient(135deg, ${cat.color}22 0%, ${cat.color}44 100%)` }}>
+      <div className="absolute opacity-25" style={{ color: cat.color, right: '-24px', bottom: '-24px' }}>
+        <IconComp size={size === 'lg' ? 200 : size === 'md' ? 140 : 100} strokeWidth={1} />
+      </div>
+      <div className="relative z-10 text-center px-4">
+        <IconComp size={size === 'lg' ? 56 : 40} strokeWidth={1.5} style={{ color: cat.color }} />
+      </div>
+      <div className="absolute top-3 left-3">
+        <span className="text-[10px] font-semibold tracking-wider uppercase px-2 py-1 rounded-full"
+          style={{ backgroundColor: 'rgba(255,255,255,0.85)', color: cat.color }}>
+          {cat.nombre}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// Login Modal
+function LoginModal({ show, onClose, onLogin, password }) {
+  const [input, setInput] = useState('');
+  const [error, setError] = useState('');
+  if (!show) return null;
+
+  const submit = () => {
+    if (input === password) { onLogin(); setInput(''); setError(''); }
+    else { setError('Contraseña incorrecta'); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+      style={{ backgroundColor: 'rgba(15,30,61,0.7)' }} onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-sm p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-center mb-4">
+          <div className="w-14 h-14 rounded-full flex items-center justify-center"
+            style={{ backgroundColor: C.cream }}>
+            <Lock size={24} style={{ color: C.gold }} />
+          </div>
+        </div>
+        <h3 className="text-xl font-semibold text-center mb-1"
+          style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep }}>Acceso del equipo</h3>
+        <p className="text-xs text-center mb-5" style={{ color: C.muted }}>
+          Ingresa la contraseña para acceder a listas de precios y cotizaciones.
+        </p>
+        <input type="password" value={input}
+          onChange={(e) => { setInput(e.target.value); setError(''); }}
+          onKeyDown={(e) => e.key === 'Enter' && submit()}
+          placeholder="Contraseña" autoFocus
+          className="w-full px-4 py-3 rounded-lg border text-sm outline-none mb-2"
+          style={{ borderColor: error ? '#B54545' : C.border }} />
+        {error && <div className="text-xs mb-2" style={{ color: '#B54545' }}>{error}</div>}
+        <div className="flex gap-2 mt-3">
+          <button onClick={onClose} className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium"
+            style={{ border: `1px solid ${C.border}`, color: C.navy }}>Cancelar</button>
+          <button onClick={submit} className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium"
+            style={{ backgroundColor: C.navyDeep, color: C.paper }}>Ingresar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Catalog View
+function CatalogView({ products, categories, isStaff, onOpen, onShare }) {
+  const [search, setSearch] = useState('');
+  const [catFilter, setCatFilter] = useState('todas');
+  const [provFilter, setProvFilter] = useState('todos');
+
+  const proveedores = useMemo(() =>
+    [...new Set(products.map(p => p.proveedor).filter(Boolean))], [products]);
+
+  const filtered = useMemo(() => products.filter(p => {
+    const ms = !search || p.nombre.toLowerCase().includes(search.toLowerCase()) ||
+      p.id.toLowerCase().includes(search.toLowerCase()) ||
+      (p.proveedor || '').toLowerCase().includes(search.toLowerCase());
+    const mc = catFilter === 'todas' || p.categoria === catFilter;
+    const mp = provFilter === 'todos' || p.proveedor === provFilter;
+    return ms && mc && mp;
+  }), [search, catFilter, provFilter, products]);
+
+  const getCat = (key) => categories.find(c => c.key === key);
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="mb-10">
+        <div className="flex items-baseline gap-3 mb-2">
+          <span className="text-xs tracking-[0.2em] uppercase font-medium" style={{ color: C.gold }}>
+            Catálogo
+          </span>
+          <div className="flex-1 h-px" style={{ backgroundColor: C.border }} />
+          {isStaff && (
+            <span className="text-[10px] tracking-wider uppercase font-semibold px-2 py-0.5 rounded"
+              style={{ backgroundColor: C.gold, color: C.navyDeep }}>Modo equipo</span>
+          )}
+        </div>
+        <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight mb-3"
+          style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep }}>
+          Insumos agropecuarios<br />
+          <span style={{ color: C.gold, fontStyle: 'italic', fontWeight: 400 }}>de confianza</span>
+        </h1>
+        <p className="text-base max-w-2xl" style={{ color: C.muted }}>
+          Explora nuestro portafolio. Comparte fichas con tus clientes o genera cotizaciones al instante.
+        </p>
+      </div>
+
+      <div className="mb-6">
+        <div className="flex items-center gap-3 px-4 py-3 rounded-lg border-2 bg-white"
+          style={{ borderColor: C.border }}>
+          <Search size={18} style={{ color: C.muted }} />
+          <input type="text" placeholder="Buscar por nombre, código, proveedor..."
+            value={search} onChange={(e) => setSearch(e.target.value)}
+            className="flex-1 bg-transparent outline-none text-sm" style={{ color: C.ink }} />
+          {search && (
+            <button onClick={() => setSearch('')} style={{ color: C.muted }}>
+              <X size={16} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {proveedores.length > 1 && (
+        <div className="mb-4 flex flex-wrap gap-2 items-center">
+          <span className="text-xs uppercase tracking-wider font-medium mr-1 flex items-center gap-1"
+            style={{ color: C.muted }}>
+            <Building2 size={12} /> Proveedor:
+          </span>
+          <button onClick={() => setProvFilter('todos')}
+            className="px-3 py-1 rounded-full text-xs font-medium"
+            style={{
+              backgroundColor: provFilter === 'todos' ? C.gold : 'transparent',
+              color: provFilter === 'todos' ? C.navyDeep : C.navy,
+              border: `1px solid ${provFilter === 'todos' ? C.gold : C.border}`,
+            }}>Todos</button>
+          {proveedores.map(prov => (
+            <button key={prov} onClick={() => setProvFilter(prov)}
+              className="px-3 py-1 rounded-full text-xs font-medium"
+              style={{
+                backgroundColor: provFilter === prov ? C.gold : 'transparent',
+                color: provFilter === prov ? C.navyDeep : C.navy,
+                border: `1px solid ${provFilter === prov ? C.gold : C.border}`,
+              }}>{prov}</button>
+          ))}
+        </div>
+      )}
+
+      <div className="mb-8 flex flex-wrap gap-2">
+        <button onClick={() => setCatFilter('todas')}
+          className="px-4 py-2 rounded-full text-sm font-medium"
+          style={{
+            backgroundColor: catFilter === 'todas' ? C.navyDeep : 'transparent',
+            color: catFilter === 'todas' ? C.paper : C.navy,
+            border: `1px solid ${catFilter === 'todas' ? C.navyDeep : C.border}`,
+          }}>Todas ({products.length})</button>
+        {categories.map(cat => {
+          const count = products.filter(p => p.categoria === cat.key).length;
+          if (count === 0) return null;
+          const active = catFilter === cat.key;
+          const IconC = getIcon(cat.icono);
+          return (
+            <button key={cat.key} onClick={() => setCatFilter(cat.key)}
+              className="px-4 py-2 rounded-full text-sm font-medium flex items-center gap-2"
+              style={{
+                backgroundColor: active ? C.navyDeep : 'transparent',
+                color: active ? C.paper : C.navy,
+                border: `1px solid ${active ? C.navyDeep : C.border}`,
+              }}>
+              <IconC size={14} />
+              {cat.nombre} ({count})
+            </button>
+          );
+        })}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="text-center py-16" style={{ color: C.muted }}>
+          <Package size={48} style={{ opacity: 0.4, margin: '0 auto 1rem' }} />
+          <p>No se encontraron productos.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+          {filtered.map(p => (
+            <div key={p.id}
+              className="rounded-xl overflow-hidden border hover:shadow-xl cursor-pointer bg-white transition-all"
+              style={{ borderColor: C.border }} onClick={() => onOpen(p)}>
+              <ProductVisual producto={p} categoria={getCat(p.categoria)} />
+              <div className="p-4">
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <span className="text-[10px] font-mono tracking-wider" style={{ color: C.muted }}>
+                    {p.id}
+                  </span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                    style={{ backgroundColor: C.borderSoft, color: C.muted }}>
+                    {p.iva === 0 ? 'Sin IVA' : `IVA ${p.iva}% incl.`}
+                  </span>
+                </div>
+                <h3 className="font-semibold text-base mb-1 line-clamp-2"
+                  style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep, minHeight: '48px' }}>
+                  {p.nombre}
+                </h3>
+                <p className="text-xs mb-1" style={{ color: C.muted }}>{p.presentacion}</p>
+                {p.proveedor && (
+                  <p className="text-[10px] mb-3 uppercase tracking-wider" style={{ color: C.gold }}>
+                    {p.proveedor}
+                  </p>
+                )}
+                <div className="flex items-center justify-between pt-3 border-t"
+                  style={{ borderColor: C.borderSoft }}>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider" style={{ color: C.muted }}>
+                      Precio (IVA incl.)
+                    </div>
+                    <div className="text-lg font-semibold" style={{ color: C.navyDeep }}>
+                      {formatCOP(p.pub)}
+                    </div>
+                  </div>
+                  <button onClick={(e) => { e.stopPropagation(); onShare(p); }}
+                    className="p-2 rounded-full"
+                    style={{ backgroundColor: C.borderSoft, color: C.navy }}>
+                    <Share2 size={16} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Product Detail
+function ProductDetail({ producto, categories, config, isStaff, onClose, onShare, onAddToQuote }) {
+  if (!producto) return null;
+  const cat = categories.find(c => c.key === producto.categoria);
+  const margenVet = parseFloat(config.margen_veterinario || '5');
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6"
+      style={{ backgroundColor: 'rgba(15,30,61,0.6)' }} onClick={onClose}>
+      <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-3xl max-h-[92vh] overflow-y-auto shadow-2xl"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="relative">
+          <ProductVisual producto={producto} categoria={cat} size="lg" />
+          <button onClick={onClose}
+            className="absolute top-4 right-4 w-9 h-9 rounded-full flex items-center justify-center"
+            style={{ backgroundColor: 'rgba(255,255,255,0.95)', color: C.navyDeep }}>
+            <X size={18} />
+          </button>
+        </div>
+        <div className="p-6 sm:p-8">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <span className="text-[10px] font-mono tracking-wider" style={{ color: C.muted }}>{producto.id}</span>
+            <span style={{ color: C.border }}>•</span>
+            <span className="text-xs" style={{ color: cat?.color, fontWeight: 500 }}>{cat?.nombre}</span>
+            {producto.proveedor && (
+              <>
+                <span style={{ color: C.border }}>•</span>
+                <span className="text-xs flex items-center gap-1"
+                  style={{ color: C.goldDim, fontWeight: 500 }}>
+                  <Building2 size={11} /> {producto.proveedor}
+                </span>
+              </>
+            )}
+          </div>
+          <h2 className="text-2xl sm:text-3xl font-semibold tracking-tight mb-1"
+            style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep }}>{producto.nombre}</h2>
+          <p className="text-sm mb-5" style={{ color: C.muted }}>{producto.presentacion}</p>
+
+          {(producto.descComercial || (isStaff && producto.descTecnica)) && (
+            <div className="mb-5 p-4 rounded-lg" style={{ backgroundColor: C.cream }}>
+              {producto.descComercial && (
+                <>
+                  <div className="text-[10px] tracking-[0.15em] uppercase mb-2 font-semibold" style={{ color: C.gold }}>
+                    Descripción
+                  </div>
+                  <p className="text-sm leading-relaxed mb-3" style={{ color: C.ink }}>
+                    {producto.descComercial}
+                  </p>
+                </>
+              )}
+              {isStaff && producto.descTecnica && (
+                <div className={producto.descComercial ? "pt-3 border-t" : ""} style={{ borderColor: C.border }}>
+                  <div className="text-[10px] tracking-[0.15em] uppercase mb-2 font-semibold flex items-center gap-1"
+                    style={{ color: C.muted }}>
+                    <Info size={11} /> Información técnica (interna)
+                  </div>
+                  <p className="text-xs leading-relaxed" style={{ color: C.muted }}>
+                    {producto.descTecnica}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {isStaff ? (
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              {PRICE_LISTS.map(pl => (
+                <div key={pl.key} className="p-3 rounded-lg"
+                  style={{ backgroundColor: pl.key === 'pub' ? C.navyDeep : C.cream }}>
+                  <div className="text-[10px] uppercase tracking-wider mb-1"
+                    style={{ color: pl.key === 'pub' ? C.goldSoft : C.muted }}>{pl.label}</div>
+                  <div className="font-semibold text-sm sm:text-base"
+                    style={{ color: pl.key === 'pub' ? C.paper : C.navyDeep }}>
+                    {formatCOP(getPrice(producto, pl.key, margenVet))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="mb-4 p-4 rounded-lg" style={{ backgroundColor: C.navyDeep }}>
+              <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: C.goldSoft }}>
+                Precio público
+              </div>
+              <div className="text-2xl font-semibold" style={{ color: C.paper, fontFamily: "'Fraunces', serif" }}>
+                {formatCOP(producto.pub)}
+              </div>
+            </div>
+          )}
+
+          <div className="mb-6 px-3 py-2 rounded text-xs inline-flex items-center gap-2"
+            style={{ backgroundColor: C.borderSoft, color: C.muted }}>
+            <Info size={12} />
+            {producto.iva === 0 ? 'Producto excluido de IVA' : `Precio con IVA del ${producto.iva}% ya incluido`}
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-2 pt-4 border-t" style={{ borderColor: C.borderSoft }}>
+            <button onClick={() => onShare(producto)}
+              className="flex-1 px-4 py-3 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
+              style={{ backgroundColor: 'transparent', color: C.navyDeep, border: `1.5px solid ${C.navyDeep}` }}>
+              <Share2 size={16} /> Compartir producto
+            </button>
+            {isStaff && (
+              <button onClick={() => onAddToQuote(producto)}
+                className="flex-1 px-4 py-3 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
+                style={{ backgroundColor: C.navyDeep, color: C.paper }}>
+                <Plus size={16} /> Agregar a cotización
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Price List View
+function PriceListView({ products, categories, config, company }) {
+  const [activeList, setActiveList] = useState('pub');
+  const [catFilter, setCatFilter] = useState('todas');
+  const [search, setSearch] = useState('');
+  const margenVet = parseFloat(config.margen_veterinario || '5');
+
+  const filtered = useMemo(() => products.filter(p => {
+    const mc = catFilter === 'todas' || p.categoria === catFilter;
+    const ms = !search || p.nombre.toLowerCase().includes(search.toLowerCase()) ||
+      p.id.toLowerCase().includes(search.toLowerCase());
+    return mc && ms;
+  }), [catFilter, search, products]);
+
+  const grouped = useMemo(() => {
+    const g = {};
+    filtered.forEach(p => {
+      if (!g[p.categoria]) g[p.categoria] = [];
+      g[p.categoria].push(p);
+    });
+    return g;
+  }, [filtered]);
+
+  const getCat = (key) => categories.find(c => c.key === key);
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="mb-8 no-print">
+        <div className="flex items-baseline gap-3 mb-2">
+          <span className="text-xs tracking-[0.2em] uppercase font-medium" style={{ color: C.gold }}>
+            Listas de Precios
+          </span>
+          <div className="flex-1 h-px" style={{ backgroundColor: C.border }} />
+          <span className="text-[10px] tracking-wider uppercase font-semibold px-2 py-0.5 rounded"
+            style={{ backgroundColor: C.gold, color: C.navyDeep }}>Uso interno</span>
+        </div>
+        <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight mb-3"
+          style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep }}>Lista de precios vigente</h1>
+        <p className="text-xs" style={{ color: C.muted }}>
+          Todos los precios incluyen IVA. La columna IVA indica el porcentaje incorporado.
+        </p>
+
+        <div className="flex flex-col sm:flex-row justify-between gap-4 mt-6">
+          <div className="inline-flex p-1 rounded-lg" style={{ backgroundColor: C.cream }}>
+            {PRICE_LISTS.map(pl => (
+              <button key={pl.key} onClick={() => setActiveList(pl.key)}
+                className="px-4 py-2 rounded-md text-sm font-medium"
+                style={{
+                  backgroundColor: activeList === pl.key ? C.navyDeep : 'transparent',
+                  color: activeList === pl.key ? C.paper : C.navy,
+                }}>{pl.label}</button>
+            ))}
+          </div>
+          <button onClick={() => window.print()}
+            className="px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2"
+            style={{ backgroundColor: C.gold, color: C.navyDeep }}>
+            <Printer size={16} /> Imprimir / Guardar PDF
+          </button>
+        </div>
+
+        <div className="mt-4">
+          <div className="flex items-center gap-2 px-3 py-2 rounded-md border bg-white"
+            style={{ borderColor: C.border }}>
+            <Search size={14} style={{ color: C.muted }} />
+            <input type="text" placeholder="Buscar producto..."
+              value={search} onChange={e => setSearch(e.target.value)}
+              className="flex-1 bg-transparent outline-none text-sm" />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2 mt-3">
+          <button onClick={() => setCatFilter('todas')}
+            className="px-3 py-1.5 rounded-full text-xs font-medium"
+            style={{
+              backgroundColor: catFilter === 'todas' ? C.navyDeep : 'transparent',
+              color: catFilter === 'todas' ? C.paper : C.navy,
+              border: `1px solid ${catFilter === 'todas' ? C.navyDeep : C.border}`,
+            }}>Todas</button>
+          {categories.map(cat => {
+            const count = products.filter(p => p.categoria === cat.key).length;
+            if (count === 0) return null;
+            return (
+              <button key={cat.key} onClick={() => setCatFilter(cat.key)}
+                className="px-3 py-1.5 rounded-full text-xs font-medium"
+                style={{
+                  backgroundColor: catFilter === cat.key ? C.navyDeep : 'transparent',
+                  color: catFilter === cat.key ? C.paper : C.navy,
+                  border: `1px solid ${catFilter === cat.key ? C.navyDeep : C.border}`,
+                }}>{cat.nombre}</button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="print-only mb-6">
+        <div className="flex justify-between items-center border-b-2 pb-4 mb-4"
+          style={{ borderColor: C.navyDeep }}>
+          <Logo size={50} />
+          <div className="text-right">
+            <div className="text-xs font-semibold" style={{ color: C.navyDeep }}>{company.razonSocial}</div>
+            <div className="text-xs" style={{ color: C.muted }}>{company.email}</div>
+          </div>
+        </div>
+        <h2 className="text-2xl font-semibold" style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep }}>
+          Lista de Precios · {PRICE_LISTS.find(p => p.key === activeList).label}
+        </h2>
+        <div className="text-xs mt-1" style={{ color: C.muted }}>
+          Vigente desde {new Date().toLocaleDateString('es-CO', { day: 'numeric', month: 'long', year: 'numeric' })} · Todos los precios incluyen IVA
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl overflow-hidden border" style={{ borderColor: C.border }}>
+        {Object.entries(grouped).map(([catKey, prods]) => {
+          const cat = getCat(catKey);
+          if (!cat) return null;
+          const IconC = getIcon(cat.icono);
+          return (
+            <div key={catKey}>
+              <div className="px-5 py-2.5 text-xs font-semibold tracking-wider uppercase flex items-center gap-2"
+                style={{ backgroundColor: C.cream, color: cat.color }}>
+                <IconC size={14} />
+                {cat.nombre}
+              </div>
+              <div>
+                {prods.map((p, idx) => (
+                  <div key={p.id}
+                    className="grid grid-cols-12 gap-3 px-5 py-3 items-center text-sm"
+                    style={{ borderTop: idx > 0 ? `1px solid ${C.borderSoft}` : 'none' }}>
+                    <div className="col-span-2 sm:col-span-1 text-[10px] font-mono"
+                      style={{ color: C.muted }}>{p.id}</div>
+                    <div className="col-span-10 sm:col-span-5">
+                      <div className="font-medium" style={{ color: C.navyDeep }}>{p.nombre}</div>
+                      <div className="text-xs mt-0.5" style={{ color: C.muted }}>
+                        {p.presentacion}{p.proveedor && ` · ${p.proveedor}`}
+                      </div>
+                    </div>
+                    <div className="hidden sm:block col-span-1 text-xs text-center" style={{ color: C.muted }}>
+                      {p.iva === 0 ? 'Excl.' : `IVA ${p.iva}%`}
+                    </div>
+                    <div className="col-span-12 sm:col-span-5 text-right">
+                      <span className="font-semibold text-base" style={{ color: C.navyDeep }}>
+                        {formatCOP(getPrice(p, activeList, margenVet))}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+        {filtered.length === 0 && (
+          <div className="p-10 text-center text-sm" style={{ color: C.muted }}>
+            No se encontraron productos.
+          </div>
+        )}
+      </div>
+
+      <div className="text-xs mt-4" style={{ color: C.muted }}>
+        * Precios en pesos colombianos (COP) con IVA incluido. Precio Veterinario = Público − {margenVet}%. Precios sujetos a cambio.
+      </div>
+    </div>
+  );
+}
+
+// Quote PDF Preview
+function QuotePDFPreview({ cliente, items, totals, notas, quoteNumber, company, validezDias }) {
+  const today = new Date().toLocaleDateString('es-CO', { day: 'numeric', month: 'long', year: 'numeric' });
+  const validUntil = new Date(Date.now() + validezDias * 24 * 60 * 60 * 1000)
+    .toLocaleDateString('es-CO', { day: 'numeric', month: 'long', year: 'numeric' });
+
+  return (
+    <div id="pdf-preview" className="bg-white mx-auto shadow-xl print:shadow-none"
+      style={{ maxWidth: '210mm', padding: '18mm 16mm', color: C.ink, fontFamily: "'Manrope', sans-serif" }}>
+      <div className="flex justify-between items-start pb-6 border-b-2" style={{ borderColor: C.navyDeep }}>
+        <div>
+          <Logo size={54} />
+          <div className="mt-3 text-[11px] leading-relaxed" style={{ color: C.muted }}>
+            <div className="font-semibold" style={{ color: C.navyDeep }}>{company.razonSocial}</div>
+            {company.nit && <div>NIT {company.nit}</div>}
+            {company.direccion && <div>{company.direccion}</div>}
+            <div>{company.email}</div>
+            {company.telefono && <div>{company.telefono}</div>}
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="inline-block px-4 py-2 rounded"
+            style={{ backgroundColor: C.navyDeep, color: C.gold }}>
+            <div className="text-[10px] tracking-[0.2em] uppercase">Cotización</div>
+            <div className="text-xl font-semibold font-mono">{quoteNumber}</div>
+          </div>
+          <div className="mt-3 text-[11px]" style={{ color: C.muted }}>
+            <div><span className="font-medium">Fecha:</span> {today}</div>
+            <div><span className="font-medium">Válida hasta:</span> {validUntil}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-6">
+        <div className="text-[10px] tracking-[0.2em] uppercase mb-2 font-semibold" style={{ color: C.gold }}>
+          Cliente
+        </div>
+        <div className="grid grid-cols-2 gap-3 text-[12px]">
+          <div>
+            <div className="font-semibold text-base"
+              style={{ color: C.navyDeep, fontFamily: "'Fraunces', serif" }}>
+              {cliente.nombre || 'Sin nombre'}
+            </div>
+            {cliente.documento && <div style={{ color: C.muted }}>NIT/CC: {cliente.documento}</div>}
+            {cliente.direccion && <div style={{ color: C.muted }}>{cliente.direccion}</div>}
+          </div>
+          <div className="text-right" style={{ color: C.muted }}>
+            {cliente.telefono && <div>Tel: {cliente.telefono}</div>}
+            {cliente.email && <div>{cliente.email}</div>}
+          </div>
+        </div>
+      </div>
+
+      <table className="w-full mt-6 text-[11px]" style={{ borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ backgroundColor: C.navyDeep, color: C.paper }}>
+            <th className="text-left py-2.5 px-3 font-semibold" style={{ width: '11%' }}>Código</th>
+            <th className="text-left py-2.5 px-3 font-semibold">Producto</th>
+            <th className="text-center py-2.5 px-3 font-semibold" style={{ width: '8%' }}>Cant.</th>
+            <th className="text-right py-2.5 px-3 font-semibold" style={{ width: '16%' }}>V. Unit.</th>
+            <th className="text-center py-2.5 px-3 font-semibold" style={{ width: '10%' }}>IVA incl.</th>
+            <th className="text-right py-2.5 px-3 font-semibold" style={{ width: '18%' }}>Subtotal</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((it, idx) => (
+            <tr key={it.id} style={{ backgroundColor: idx % 2 === 0 ? C.cream : 'transparent' }}>
+              <td className="py-2 px-3 font-mono text-[10px]" style={{ color: C.muted }}>{it.id}</td>
+              <td className="py-2 px-3">
+                <div style={{ color: C.navyDeep, fontWeight: 500 }}>{it.nombre}</div>
+                <div className="text-[10px]" style={{ color: C.muted }}>{it.presentacion}</div>
+              </td>
+              <td className="text-center py-2 px-3">{it.cantidad}</td>
+              <td className="text-right py-2 px-3">{formatCOP(it.precio)}</td>
+              <td className="text-center py-2 px-3 text-[10px]" style={{ color: C.muted }}>
+                {it.iva === 0 ? 'Excl.' : `${it.iva}%`}
+              </td>
+              <td className="text-right py-2 px-3 font-semibold" style={{ color: C.navyDeep }}>
+                {formatCOP(it.cantidad * it.precio)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="flex justify-end mt-4">
+        <div className="w-72 text-[11px]">
+          {Object.keys(totals.ivaByRate).length > 0 && (
+            <>
+              <div className="pb-2 mb-1 text-[9px] tracking-wider uppercase" style={{ color: C.muted }}>
+                IVA incluido en los precios (informativo)
+              </div>
+              {Object.entries(totals.ivaByRate).map(([rate, amount]) => (
+                <div key={rate} className="flex justify-between py-1"
+                  style={{ borderBottom: `1px solid ${C.borderSoft}` }}>
+                  <span style={{ color: C.muted }}>· IVA {rate}</span>
+                  <span style={{ color: C.muted }}>{formatCOP(amount)}</span>
+                </div>
+              ))}
+            </>
+          )}
+          <div className="flex justify-between items-baseline py-3 px-3 mt-3 rounded"
+            style={{ backgroundColor: C.navyDeep, color: C.gold }}>
+            <div>
+              <div className="text-sm font-medium">TOTAL</div>
+              <div className="text-[9px] opacity-80">IVA incluido</div>
+            </div>
+            <span className="text-xl font-bold">{formatCOP(totals.total)}</span>
+          </div>
+        </div>
+      </div>
+
+      {notas && (
+        <div className="mt-8">
+          <div className="text-[10px] tracking-[0.2em] uppercase mb-2 font-semibold" style={{ color: C.gold }}>
+            Observaciones
+          </div>
+          <div className="text-[11px] leading-relaxed whitespace-pre-wrap" style={{ color: C.ink }}>
+            {notas}
+          </div>
+        </div>
+      )}
+
+      <div className="mt-10 pt-5 text-[10px]" style={{ borderTop: `2px solid ${C.gold}`, color: C.muted }}>
+        <div className="flex justify-between gap-4">
+          <div>
+            Precios en pesos colombianos (COP) con IVA incluido. Productos "Excl." están excluidos de IVA. Cotización generada por {company.nombreCorto}.
+          </div>
+          <div style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep, fontStyle: 'italic', whiteSpace: 'nowrap' }}>
+            {company.slogan}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Quote Builder
+function QuoteBuilder({ products, categories, config, company, quoteItems, setQuoteItems }) {
+  const [cliente, setCliente] = useState({ nombre: '', documento: '', telefono: '', email: '', direccion: '' });
+  const [priceList, setPriceList] = useState('pub');
+  const [notas, setNotas] = useState('');
+  const [showPreview, setShowPreview] = useState(false);
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [browserSearch, setBrowserSearch] = useState('');
+  const [browserCat, setBrowserCat] = useState('todas');
+  const margenVet = parseFloat(config.margen_veterinario || '5');
+
+  const [quoteNumber] = useState(() => {
+    const now = new Date();
+    return `COT-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(Math.floor(Math.random() * 999)).padStart(3, '0')}`;
+  });
+
+  useEffect(() => {
+    setQuoteItems(items => items.map(item => {
+      const p = products.find(pp => pp.id === item.id);
+      return p ? { ...item, precio: getPrice(p, priceList, margenVet) } : item;
+    }));
+  }, [priceList, margenVet, products]);
+
+  const browserResults = useMemo(() => products.filter(p => {
+    const ms = !browserSearch || p.nombre.toLowerCase().includes(browserSearch.toLowerCase()) ||
+      p.id.toLowerCase().includes(browserSearch.toLowerCase());
+    const mc = browserCat === 'todas' || p.categoria === browserCat;
+    return ms && mc;
+  }), [browserSearch, browserCat, products]);
+
+  const addProduct = (p) => {
+    const existing = quoteItems.find(it => it.id === p.id);
+    if (existing) {
+      setQuoteItems(items => items.map(it => it.id === p.id ? { ...it, cantidad: it.cantidad + 1 } : it));
+    } else {
+      setQuoteItems(items => [...items, {
+        id: p.id, nombre: p.nombre, presentacion: p.presentacion, categoria: p.categoria,
+        cantidad: 1, precio: getPrice(p, priceList, margenVet), iva: p.iva,
+      }]);
+    }
+  };
+
+  const updateItem = (id, field, value) =>
+    setQuoteItems(items => items.map(it => it.id === id ? { ...it, [field]: value } : it));
+  const removeItem = (id) =>
+    setQuoteItems(items => items.filter(it => it.id !== id));
+  const clearAll = () => {
+    if (!confirm('¿Limpiar toda la cotización?')) return;
+    setQuoteItems([]);
+    setCliente({ nombre: '', documento: '', telefono: '', email: '', direccion: '' });
+    setNotas('');
+  };
+
+  const totals = useMemo(() => {
+    const total = quoteItems.reduce((s, it) => s + it.cantidad * it.precio, 0);
+    const ivaByRate = {};
+    quoteItems.forEach(it => {
+      if (it.iva > 0) {
+        const k = `${it.iva}%`;
+        const ivaIn = it.cantidad * it.precio * it.iva / (100 + it.iva);
+        ivaByRate[k] = (ivaByRate[k] || 0) + ivaIn;
+      }
+    });
+    return { total, ivaByRate };
+  }, [quoteItems]);
+
+  const handleGeneratePDF = () => {
+    if (!cliente.nombre.trim()) { alert('Ingresa al menos el nombre del cliente.'); return; }
+    if (quoteItems.length === 0) { alert('Agrega al menos un producto.'); return; }
+    setShowPreview(true);
+    setTimeout(() => window.print(), 400);
+  };
+
+  const getCat = (key) => categories.find(c => c.key === key);
+  const validezDias = parseInt(config.validez_cotizacion_dias || '15');
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="mb-8 no-print">
+        <div className="flex items-baseline gap-3 mb-2">
+          <span className="text-xs tracking-[0.2em] uppercase font-medium" style={{ color: C.gold }}>
+            Cotización
+          </span>
+          <div className="flex-1 h-px" style={{ backgroundColor: C.border }} />
+          <span className="text-xs font-mono" style={{ color: C.muted }}>{quoteNumber}</span>
+        </div>
+        <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight mb-2"
+          style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep }}>Nueva cotización</h1>
+        <p className="text-sm" style={{ color: C.muted }}>
+          Completa los datos del cliente y selecciona productos. Todos los precios incluyen IVA.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 no-print">
+        <div className="lg:col-span-2 space-y-5">
+          <div className="bg-white rounded-xl p-5 border" style={{ borderColor: C.border }}>
+            <h3 className="text-sm font-semibold mb-4 flex items-center gap-2" style={{ color: C.navyDeep }}>
+              <User size={16} style={{ color: C.gold }} /> Datos del cliente
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="sm:col-span-2">
+                <label className="text-[11px] uppercase tracking-wider font-medium" style={{ color: C.muted }}>
+                  Nombre / Razón social *
+                </label>
+                <input type="text" value={cliente.nombre}
+                  onChange={e => setCliente({ ...cliente, nombre: e.target.value })}
+                  placeholder="Ej: Finca La Esperanza / Juan Pérez"
+                  className="w-full mt-1 px-3 py-2 rounded-md border text-sm outline-none"
+                  style={{ borderColor: C.border }} />
+              </div>
+              {[['documento', 'NIT / Cédula'], ['telefono', 'Teléfono'], ['email', 'Correo'], ['direccion', 'Dirección / Municipio']].map(([k, label]) => (
+                <div key={k}>
+                  <label className="text-[11px] uppercase tracking-wider font-medium" style={{ color: C.muted }}>
+                    {label}
+                  </label>
+                  <input type={k === 'email' ? 'email' : 'text'} value={cliente[k]}
+                    onChange={e => setCliente({ ...cliente, [k]: e.target.value })}
+                    className="w-full mt-1 px-3 py-2 rounded-md border text-sm outline-none"
+                    style={{ borderColor: C.border }} />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl p-5 border" style={{ borderColor: C.border }}>
+            <div className="flex items-start justify-between mb-3">
+              <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: C.navyDeep }}>
+                <Tag size={16} style={{ color: C.gold }} /> Lista de precios (interno)
+              </h3>
+              <span className="text-[9px] tracking-wider uppercase font-semibold px-2 py-0.5 rounded"
+                style={{ backgroundColor: C.cream, color: C.muted }}>No visible al cliente</span>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              {PRICE_LISTS.map(pl => (
+                <button key={pl.key} onClick={() => setPriceList(pl.key)}
+                  className="px-4 py-2 rounded-md text-sm font-medium"
+                  style={{
+                    backgroundColor: priceList === pl.key ? C.navyDeep : C.cream,
+                    color: priceList === pl.key ? C.paper : C.navy,
+                  }}>{pl.label}</button>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl p-5 border" style={{ borderColor: C.border }}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: C.navyDeep }}>
+                <Package size={16} style={{ color: C.gold }} /> Productos
+                {quoteItems.length > 0 && (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold"
+                    style={{ backgroundColor: C.gold, color: C.navyDeep }}>{quoteItems.length}</span>
+                )}
+              </h3>
+              <button onClick={() => setBrowserOpen(!browserOpen)}
+                className="px-3 py-2 rounded-md text-xs font-medium flex items-center gap-2"
+                style={{
+                  backgroundColor: browserOpen ? C.navyDeep : C.gold,
+                  color: browserOpen ? C.paper : C.navyDeep,
+                }}>
+                {browserOpen ? <><X size={14} /> Cerrar</> : <><Plus size={14} /> Agregar productos</>}
+              </button>
+            </div>
+
+            {browserOpen && (
+              <div className="mb-5 rounded-lg p-4 border-2 border-dashed"
+                style={{ borderColor: C.border, backgroundColor: C.cream }}>
+                <div className="flex items-center gap-2 px-3 py-2 rounded-md border bg-white mb-3"
+                  style={{ borderColor: C.border }}>
+                  <Search size={14} style={{ color: C.muted }} />
+                  <input type="text" placeholder="Buscar por nombre o código..."
+                    value={browserSearch} onChange={e => setBrowserSearch(e.target.value)}
+                    className="flex-1 bg-transparent outline-none text-sm" />
+                  {browserSearch && (
+                    <button onClick={() => setBrowserSearch('')} style={{ color: C.muted }}>
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5 mb-3">
+                  <button onClick={() => setBrowserCat('todas')}
+                    className="px-2.5 py-1 rounded-full text-[11px] font-medium"
+                    style={{
+                      backgroundColor: browserCat === 'todas' ? C.navyDeep : 'white',
+                      color: browserCat === 'todas' ? C.paper : C.navy,
+                      border: `1px solid ${browserCat === 'todas' ? C.navyDeep : C.border}`,
+                    }}>Todas</button>
+                  {categories.map(cat => {
+                    const count = products.filter(p => p.categoria === cat.key).length;
+                    if (count === 0) return null;
+                    return (
+                      <button key={cat.key} onClick={() => setBrowserCat(cat.key)}
+                        className="px-2.5 py-1 rounded-full text-[11px] font-medium"
+                        style={{
+                          backgroundColor: browserCat === cat.key ? C.navyDeep : 'white',
+                          color: browserCat === cat.key ? C.paper : C.navy,
+                          border: `1px solid ${browserCat === cat.key ? C.navyDeep : C.border}`,
+                        }}>{cat.nombre}</button>
+                    );
+                  })}
+                </div>
+                <div className="max-h-80 overflow-y-auto space-y-1">
+                  {browserResults.length === 0 ? (
+                    <div className="text-center py-8 text-sm" style={{ color: C.muted }}>
+                      No hay productos con esos filtros.
+                    </div>
+                  ) : browserResults.map(p => {
+                    const inQuote = quoteItems.find(it => it.id === p.id);
+                    const cat = getCat(p.categoria);
+                    const IconC = getIcon(cat?.icono || 'package');
+                    return (
+                      <button key={p.id} onClick={() => addProduct(p)}
+                        className="w-full text-left p-2.5 rounded-md flex items-center gap-3 bg-white hover:shadow-md"
+                        style={{ border: `1px solid ${inQuote ? C.gold : C.border}` }}>
+                        <div className="w-9 h-9 rounded-md flex items-center justify-center flex-shrink-0"
+                          style={{ backgroundColor: (cat?.color || '#666') + '22' }}>
+                          <IconC size={16} style={{ color: cat?.color }} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-sm truncate" style={{ color: C.navyDeep }}>
+                            {p.nombre}
+                          </div>
+                          <div className="text-[11px]" style={{ color: C.muted }}>
+                            {p.id} · {p.presentacion} · {p.iva === 0 ? 'Sin IVA' : `IVA ${p.iva}% incl.`}
+                          </div>
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <div className="font-semibold text-sm" style={{ color: C.navyDeep }}>
+                            {formatCOP(getPrice(p, priceList, margenVet))}
+                          </div>
+                          {inQuote ? (
+                            <div className="text-[10px] font-semibold flex items-center gap-0.5 justify-end"
+                              style={{ color: C.goldDim }}>
+                              <Check size={10} /> x{inQuote.cantidad}
+                            </div>
+                          ) : (
+                            <div className="text-[10px]" style={{ color: C.muted }}>Clic para agregar</div>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {quoteItems.length === 0 ? (
+              <div className="text-center py-10 text-sm rounded-md border-2 border-dashed"
+                style={{ color: C.muted, borderColor: C.border }}>
+                <ShoppingCart size={32} style={{ margin: '0 auto 0.5rem', opacity: 0.4 }} />
+                <p className="mb-3">Aún no has agregado productos</p>
+                {!browserOpen && (
+                  <button onClick={() => setBrowserOpen(true)}
+                    className="px-4 py-2 rounded-md text-xs font-semibold"
+                    style={{ backgroundColor: C.gold, color: C.navyDeep }}>Explorar catálogo</button>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {quoteItems.map(it => {
+                  const cat = getCat(it.categoria);
+                  const IconC = getIcon(cat?.icono || 'package');
+                  return (
+                    <div key={it.id}
+                      className="flex flex-col sm:flex-row sm:items-center gap-3 p-3 rounded-md"
+                      style={{ backgroundColor: C.cream }}>
+                      <div className="flex items-start gap-2 flex-1 min-w-0">
+                        <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0 mt-0.5"
+                          style={{ backgroundColor: (cat?.color || '#666') + '22' }}>
+                          <IconC size={14} style={{ color: cat?.color }} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-medium text-sm truncate" style={{ color: C.navyDeep }}>{it.nombre}</div>
+                          <div className="text-xs" style={{ color: C.muted }}>
+                            {it.id} · {it.presentacion} · {it.iva === 0 ? 'Sin IVA' : `IVA ${it.iva}% incl.`}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 sm:flex-shrink-0">
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => updateItem(it.id, 'cantidad', Math.max(1, it.cantidad - 1))}
+                            className="w-7 h-7 rounded flex items-center justify-center bg-white"
+                            style={{ color: C.navy }}><Minus size={12} /></button>
+                          <input type="number" min="1" value={it.cantidad}
+                            onChange={e => updateItem(it.id, 'cantidad', Math.max(1, parseInt(e.target.value) || 1))}
+                            className="w-14 text-center rounded py-1 text-sm font-medium outline-none bg-white"
+                            style={{ color: C.navyDeep }} />
+                          <button onClick={() => updateItem(it.id, 'cantidad', it.cantidad + 1)}
+                            className="w-7 h-7 rounded flex items-center justify-center bg-white"
+                            style={{ color: C.navy }}><Plus size={12} /></button>
+                        </div>
+                        <div className="text-right" style={{ minWidth: '90px' }}>
+                          <div className="text-xs" style={{ color: C.muted }}>{formatCOP(it.precio)} c/u</div>
+                          <div className="font-semibold text-sm" style={{ color: C.navyDeep }}>
+                            {formatCOP(it.cantidad * it.precio)}
+                          </div>
+                        </div>
+                        <button onClick={() => removeItem(it.id)} className="p-1.5 rounded"
+                          style={{ color: '#B54545' }}><Trash2 size={14} /></button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="bg-white rounded-xl p-5 border" style={{ borderColor: C.border }}>
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2" style={{ color: C.navyDeep }}>
+              <FileText size={16} style={{ color: C.gold }} /> Observaciones
+            </h3>
+            <textarea rows={3} value={notas} onChange={e => setNotas(e.target.value)}
+              placeholder="Validez de la oferta, condiciones de pago, tiempo de entrega..."
+              className="w-full px-3 py-2 rounded-md border text-sm outline-none resize-none"
+              style={{ borderColor: C.border }} />
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div className="bg-white rounded-xl p-5 border lg:sticky lg:top-24"
+            style={{ borderColor: C.border }}>
+            <h3 className="text-sm font-semibold mb-4" style={{ color: C.navyDeep }}>Resumen</h3>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span style={{ color: C.muted }}>Productos</span>
+                <span style={{ color: C.navy }}>{quoteItems.length}</span>
+              </div>
+              <div className="flex justify-between">
+                <span style={{ color: C.muted }}>Unidades</span>
+                <span style={{ color: C.navy }}>{quoteItems.reduce((s, it) => s + it.cantidad, 0)}</span>
+              </div>
+              {Object.keys(totals.ivaByRate).length > 0 && (
+                <div className="pt-2 mt-2 border-t text-xs" style={{ borderColor: C.borderSoft }}>
+                  <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: C.muted }}>
+                    IVA incluido (informativo)
+                  </div>
+                  {Object.entries(totals.ivaByRate).map(([rate, amount]) => (
+                    <div key={rate} className="flex justify-between">
+                      <span style={{ color: C.muted }}>· IVA {rate}</span>
+                      <span style={{ color: C.muted }}>{formatCOP(amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="pt-3 mt-3 border-t flex justify-between items-baseline"
+                style={{ borderColor: C.border }}>
+                <div>
+                  <div className="text-sm" style={{ color: C.navyDeep }}>Total</div>
+                  <div className="text-[10px]" style={{ color: C.muted }}>IVA incluido</div>
+                </div>
+                <span className="text-2xl font-semibold"
+                  style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep }}>
+                  {formatCOP(totals.total)}
+                </span>
+              </div>
+            </div>
+            <div className="space-y-2 mt-5">
+              <button onClick={handleGeneratePDF}
+                disabled={quoteItems.length === 0 || !cliente.nombre.trim()}
+                className="w-full px-4 py-3 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ backgroundColor: C.gold, color: C.navyDeep }}>
+                <Download size={16} /> Descargar como PDF
+              </button>
+              <button onClick={() => setShowPreview(!showPreview)}
+                disabled={quoteItems.length === 0}
+                className="w-full px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40"
+                style={{ color: C.navy, border: `1px solid ${C.border}` }}>
+                <Eye size={14} /> {showPreview ? 'Ocultar' : 'Ver'} vista previa
+              </button>
+              <button onClick={clearAll} disabled={quoteItems.length === 0}
+                className="w-full px-4 py-2 rounded-lg text-xs disabled:opacity-40"
+                style={{ color: C.muted }}>Limpiar cotización</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className={`mt-10 ${showPreview ? 'block' : 'hidden print:block'}`}>
+        <QuotePDFPreview cliente={cliente} items={quoteItems} totals={totals}
+          notas={notas} quoteNumber={quoteNumber} company={company} validezDias={validezDias} />
+      </div>
+    </div>
+  );
+}
+
+// Share Modal
+function ShareModal({ producto, onClose, onToast, company }) {
+  if (!producto) return null;
+  const shareUrl = `${window.location.origin}${window.location.pathname}?p=${producto.id}`;
+  const shareText = `🌾 *${producto.nombre}*\n${producto.presentacion}${producto.proveedor ? '\n' + producto.proveedor : ''}\n\n💰 ${formatCOP(producto.pub)} (IVA ${producto.iva === 0 ? 'excluido' : 'incluido'})\n\nVer más: ${shareUrl}\n\n_Cotiza con ${company.nombreCorto}_`;
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-6"
+      style={{ backgroundColor: 'rgba(15,30,61,0.6)' }} onClick={onClose}>
+      <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-md p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between mb-5">
+          <div>
+            <div className="text-[10px] tracking-[0.2em] uppercase font-semibold mb-1" style={{ color: C.gold }}>
+              Compartir
+            </div>
+            <h3 className="text-lg font-semibold"
+              style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep }}>{producto.nombre}</h3>
+          </div>
+          <button onClick={onClose} style={{ color: C.muted }}><X size={18} /></button>
+        </div>
+        <div className="space-y-2">
+          <button onClick={() => {
+            window.open('https://wa.me/?text=' + encodeURIComponent(shareText), '_blank');
+            onClose();
+          }} className="w-full px-4 py-3 rounded-lg text-sm font-medium flex items-center gap-3"
+            style={{ backgroundColor: '#25D366', color: 'white' }}>
+            <MessageCircle size={18} /> Compartir por WhatsApp
+          </button>
+          <button onClick={() => {
+            navigator.clipboard.writeText(shareText); onToast('Información copiada'); onClose();
+          }} className="w-full px-4 py-3 rounded-lg text-sm font-medium flex items-center gap-3"
+            style={{ backgroundColor: C.navyDeep, color: C.paper }}>
+            <Copy size={16} /> Copiar información
+          </button>
+          <button onClick={() => {
+            navigator.clipboard.writeText(shareUrl); onToast('Link copiado'); onClose();
+          }} className="w-full px-4 py-3 rounded-lg text-sm font-medium flex items-center gap-3"
+            style={{ border: `1.5px solid ${C.border}`, color: C.navy }}>
+            <Copy size={16} /> Copiar solo el link
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Error Screen
+function ErrorScreen({ message, onRetry }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center p-6" style={{ backgroundColor: C.cream }}>
+      <div className="max-w-md text-center">
+        <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"
+          style={{ backgroundColor: '#FEE2E2' }}>
+          <AlertCircle size={32} style={{ color: '#B54545' }} />
+        </div>
+        <h2 className="text-2xl font-semibold mb-2"
+          style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep }}>
+          No se pudieron cargar los datos
+        </h2>
+        <p className="text-sm mb-6" style={{ color: C.muted }}>{message}</p>
+        <button onClick={onRetry}
+          className="px-5 py-2 rounded-lg font-medium flex items-center gap-2 mx-auto"
+          style={{ backgroundColor: C.navyDeep, color: C.paper }}>
+          <RefreshCw size={14} /> Reintentar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Main App
+function App() {
+  const [view, setView] = useState('catalog');
+  const [isStaff, setIsStaff] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [shareProduct, setShareProduct] = useState(null);
+  const [toast, setToast] = useState({ show: false, message: '' });
+  const [mobileMenu, setMobileMenu] = useState(false);
+  const [showLogin, setShowLogin] = useState(false);
+  const [quoteItems, setQuoteItems] = useState([]);
+
+  const [data, setData] = useState({ productos: [], categorias: [], config: {} });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const loadData = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const result = await loadAllData();
+      setData(result);
+    } catch (e) {
+      console.error(e);
+      if (e.message === 'CONFIG_MISSING') {
+        setError('Falta configurar las URLs del Google Sheet en config.js');
+      } else {
+        setError('Verifica que las URLs del Sheet estén publicadas correctamente. Detalle: ' + e.message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const pid = params.get('p');
+    if (pid && data.productos.length > 0) {
+      const p = data.productos.find(pp => pp.id === pid);
+      if (p) setSelectedProduct(p);
+    }
+  }, [data.productos]);
+
+  const showToast = (m) => {
+    setToast({ show: true, message: m });
+    setTimeout(() => setToast({ show: false, message: '' }), 2200);
+  };
+
+  const company = useMemo(() => ({
+    razonSocial: data.config.razon_social || 'Elite Inversiones Agropecuarias SAS',
+    nombreCorto: data.config.nombre_corto || 'InverElite',
+    email: data.config.email || '',
+    telefono: data.config.telefono || '',
+    direccion: data.config.direccion || '',
+    nit: data.config.nit || '',
+    slogan: data.config.slogan || 'Insumos agropecuarios de confianza',
+  }), [data.config]);
+
+  const staffPassword = data.config.password_equipo || 'inverelite2026';
+
+  const handleAddToQuote = (producto) => {
+    const margenVet = parseFloat(data.config.margen_veterinario || '5');
+    const existing = quoteItems.find(it => it.id === producto.id);
+    if (existing) {
+      setQuoteItems(items => items.map(it =>
+        it.id === producto.id ? { ...it, cantidad: it.cantidad + 1 } : it));
+    } else {
+      setQuoteItems(items => [...items, {
+        id: producto.id, nombre: producto.nombre, presentacion: producto.presentacion,
+        categoria: producto.categoria, cantidad: 1, precio: producto.pub, iva: producto.iva,
+      }]);
+    }
+    setSelectedProduct(null);
+    showToast('Producto agregado');
+    setTimeout(() => setView('quote'), 400);
+  };
+
+  if (loading) {
+    return (
+      <div className="loading-screen">
+        <div className="loading-spinner"></div>
+        <div style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep, fontSize: '18px' }}>
+          Cargando InverElite...
+        </div>
+      </div>
+    );
+  }
+
+  if (error) return <ErrorScreen message={error} onRetry={loadData} />;
+
+  const navItems = isStaff
+    ? [
+        { key: 'catalog', label: 'Catálogo', Icon: LayoutGrid },
+        { key: 'prices', label: 'Listas de Precios', Icon: List },
+        { key: 'quote', label: 'Cotización', Icon: FileCheck, badge: quoteItems.length },
+      ]
+    : [{ key: 'catalog', label: 'Catálogo', Icon: LayoutGrid }];
+
+  return (
+    <div style={{ backgroundColor: C.cream, minHeight: '100vh', fontFamily: "'Manrope', sans-serif" }}>
+      <header className="sticky top-0 z-40 border-b no-print"
+        style={{ backgroundColor: C.paper + 'ee', borderColor: C.border, backdropFilter: 'blur(10px)' }}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16">
+            <button onClick={() => setView('catalog')}><Logo size={36} /></button>
+            <nav className="hidden md:flex items-center gap-1">
+              {navItems.map(item => {
+                const active = view === item.key;
+                const IconC = item.Icon;
+                return (
+                  <button key={item.key} onClick={() => setView(item.key)}
+                    className="px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2"
+                    style={{
+                      backgroundColor: active ? C.navyDeep : 'transparent',
+                      color: active ? C.paper : C.navy,
+                    }}>
+                    <IconC size={16} /> {item.label}
+                    {item.badge > 0 && (
+                      <span className="rounded-full text-[10px] font-semibold flex items-center justify-center"
+                        style={{
+                          backgroundColor: C.gold, color: C.navyDeep,
+                          minWidth: '20px', height: '20px', padding: '0 6px'
+                        }}>{item.badge}</span>
+                    )}
+                  </button>
+                );
+              })}
+              {isStaff ? (
+                <button onClick={() => { setIsStaff(false); setView('catalog'); showToast('Sesión cerrada'); }}
+                  className="ml-2 px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-2"
+                  style={{ color: C.muted, border: `1px solid ${C.border}` }}>
+                  <LogOut size={14} /> Salir
+                </button>
+              ) : (
+                <button onClick={() => setShowLogin(true)}
+                  className="ml-2 px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-2"
+                  style={{ backgroundColor: C.gold, color: C.navyDeep }}>
+                  <Lock size={14} /> Equipo
+                </button>
+              )}
+            </nav>
+            <button className="md:hidden p-2" onClick={() => setMobileMenu(!mobileMenu)}
+              style={{ color: C.navy }}>
+              {mobileMenu ? <X size={22} /> : <Menu size={22} />}
+            </button>
+          </div>
+        </div>
+        {mobileMenu && (
+          <div className="md:hidden border-t" style={{ borderColor: C.border, backgroundColor: C.paper }}>
+            {navItems.map(item => {
+              const active = view === item.key;
+              const IconC = item.Icon;
+              return (
+                <button key={item.key}
+                  onClick={() => { setView(item.key); setMobileMenu(false); }}
+                  className="w-full px-6 py-3 text-left text-sm font-medium flex items-center gap-3 border-b"
+                  style={{
+                    backgroundColor: active ? C.navyDeep : 'transparent',
+                    color: active ? C.paper : C.navy,
+                    borderColor: C.borderSoft,
+                  }}>
+                  <IconC size={16} /> {item.label}
+                  {item.badge > 0 && (
+                    <span className="ml-auto rounded-full text-[10px] font-semibold flex items-center justify-center"
+                      style={{
+                        backgroundColor: C.gold, color: C.navyDeep,
+                        minWidth: '22px', height: '20px', padding: '0 6px'
+                      }}>{item.badge}</span>
+                  )}
+                </button>
+              );
+            })}
+            {isStaff ? (
+              <button onClick={() => { setIsStaff(false); setView('catalog'); setMobileMenu(false); showToast('Sesión cerrada'); }}
+                className="w-full px-6 py-3 text-left text-sm font-medium flex items-center gap-3"
+                style={{ color: C.muted }}>
+                <LogOut size={14} /> Cerrar sesión
+              </button>
+            ) : (
+              <button onClick={() => { setShowLogin(true); setMobileMenu(false); }}
+                className="w-full px-6 py-3 text-left text-sm font-medium flex items-center gap-3"
+                style={{ backgroundColor: C.gold, color: C.navyDeep }}>
+                <Lock size={14} /> Acceso equipo
+              </button>
+            )}
+          </div>
+        )}
+      </header>
+
+      <main>
+        {view === 'catalog' && (
+          <CatalogView products={data.productos} categories={data.categorias} isStaff={isStaff}
+            onOpen={setSelectedProduct} onShare={setShareProduct} />
+        )}
+        {view === 'prices' && isStaff && (
+          <PriceListView products={data.productos} categories={data.categorias}
+            config={data.config} company={company} />
+        )}
+        {view === 'quote' && isStaff && (
+          <QuoteBuilder products={data.productos} categories={data.categorias}
+            config={data.config} company={company}
+            quoteItems={quoteItems} setQuoteItems={setQuoteItems} />
+        )}
+      </main>
+
+      <footer className="mt-20 pt-10 pb-8 border-t no-print"
+        style={{ borderColor: C.border, backgroundColor: C.paper }}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex flex-col sm:flex-row justify-between items-start gap-6">
+            <div>
+              <Logo size={32} />
+              <p className="text-xs mt-3" style={{ color: C.muted }}>
+                {company.razonSocial}<br />{company.email}
+              </p>
+            </div>
+            <div className="text-xs" style={{ color: C.muted }}>
+              <div style={{ fontFamily: "'Fraunces', serif", fontStyle: 'italic', color: C.navy }}>
+                {company.slogan}
+              </div>
+            </div>
+          </div>
+        </div>
+      </footer>
+
+      <ProductDetail producto={selectedProduct} categories={data.categorias} config={data.config}
+        isStaff={isStaff} onClose={() => setSelectedProduct(null)}
+        onShare={(p) => { setSelectedProduct(null); setShareProduct(p); }}
+        onAddToQuote={handleAddToQuote} />
+      <ShareModal producto={shareProduct} onClose={() => setShareProduct(null)}
+        onToast={showToast} company={company} />
+      <LoginModal show={showLogin} onClose={() => setShowLogin(false)}
+        onLogin={() => { setIsStaff(true); setShowLogin(false); showToast('Sesión iniciada'); }}
+        password={staffPassword} />
+      <Toast message={toast.message} show={toast.show} />
+    </div>
+  );
+}
+
+// Mount
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
