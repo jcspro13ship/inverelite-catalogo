@@ -98,8 +98,16 @@ const normalizePhotoURL = (url) => {
   if (!url) return null;
   url = String(url).trim();
   if (!url) return null;
-  const m = url.match(/\/d\/([^\/]+)/);
-  if (m) return 'https://drive.google.com/uc?export=view&id=' + m[1];
+  // Si es link estándar de Drive (.../file/d/ID/view o .../uc?...id=ID)
+  // lo convertimos al formato lh3.googleusercontent.com que sí funciona embed
+  let id = null;
+  let m = url.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (m) id = m[1];
+  if (!id) {
+    m = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (m) id = m[1];
+  }
+  if (id) return 'https://lh3.googleusercontent.com/d/' + id + '=w1000';
   return url;
 };
 
