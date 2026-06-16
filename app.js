@@ -139,15 +139,52 @@ async function fetchCSV(url) {
   });
 }
 
+// =================== API (Apps Script) ===================
+async function apiCall(action, params = {}) {
+  const cfg = window.INVERELITE_CONFIG;
+  if (!cfg || !cfg.URL_API) throw new Error('URL_API no configurada');
+  // Apps Script no permite headers personalizados sin CORS preflight,
+  // así que usamos POST con text/plain (que NO dispara preflight)
+  const url = cfg.URL_API;
+  const body = JSON.stringify({ action, ...params });
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: body,
+    redirect: 'follow',
+  });
+  const text = await resp.text();
+  let json;
+  try { json = JSON.parse(text); }
+  catch (e) { throw new Error('Respuesta inválida del API: ' + text.substring(0, 200)); }
+  if (!json.ok) throw new Error(json.error || 'Error desconocido del API');
+  return json.data;
+}
+
+async function fetchVendedores() {
+  const cfg = window.INVERELITE_CONFIG;
+  if (!cfg.URL_VENDEDORES) return [];
+  try {
+    const rows = await fetchCSV(cfg.URL_VENDEDORES);
+    return rows
+      .filter(r => r.Nombre && (r.Activo || '').toUpperCase() === 'SI')
+      .map(r => r.Nombre);
+  } catch (e) {
+    console.warn('No se pudieron cargar vendedores:', e);
+    return [];
+  }
+}
+
 async function loadAllData() {
   const cfg = window.INVERELITE_CONFIG;
   if (!cfg || !cfg.URL_PRODUCTOS || cfg.URL_PRODUCTOS.includes('PEGAR_AQUI')) {
     throw new Error('CONFIG_MISSING');
   }
-  const [productosRaw, categoriasRaw, configRaw] = await Promise.all([
+  const [productosRaw, categoriasRaw, configRaw, vendedores] = await Promise.all([
     fetchCSV(cfg.URL_PRODUCTOS),
     fetchCSV(cfg.URL_CATEGORIAS),
     fetchCSV(cfg.URL_CONFIG),
+    fetchVendedores(),
   ]);
 
   const productos = productosRaw
@@ -182,7 +219,7 @@ async function loadAllData() {
     if (row.clave) config[row.clave] = row.valor || '';
   });
 
-  return { productos, categorias, config };
+  return { productos, categorias, config, vendedores };
 }
 
 // Toast
@@ -871,14 +908,17 @@ function QuotePDFPreview({ cliente, items, totals, notas, quoteNumber, company, 
 }
 
 // Quote Builder
-function QuoteBuilder({ products, categories, config, company, quoteItems, setQuoteItems }) {
+function QuoteBuilder({ products, categories, config, company, vendedores, quoteItems, setQuoteItems, onSaved }) {
   const [cliente, setCliente] = useState({ nombre: '', documento: '', telefono: '', email: '', direccion: '' });
+  const [vendedor, setVendedor] = useState(vendedores[0] || '');
   const [priceList, setPriceList] = useState('pub');
   const [notas, setNotas] = useState('');
   const [showPreview, setShowPreview] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [browserSearch, setBrowserSearch] = useState('');
   const [browserCat, setBrowserCat] = useState('todas');
+  const [saving, setSaving] = useState(false);
+  const [savedId, setSavedId] = useState(null);
   const margenVet = parseFloat(config.margen_veterinario || '5');
 
   const [quoteNumber] = useState(() => {
@@ -936,6 +976,38 @@ function QuoteBuilder({ products, categories, config, company, quoteItems, setQu
     return { total, ivaByRate };
   }, [quoteItems]);
 
+  const handleSave = async () => {
+    if (!cliente.nombre.trim()) { alert('Ingresa al menos el nombre del cliente.'); return; }
+    if (!vendedor) { alert('Selecciona el vendedor.'); return; }
+    if (quoteItems.length === 0) { alert('Agrega al menos un producto.'); return; }
+    setSaving(true);
+    try {
+      const result = await apiCall('saveCotizacion', {
+        vendedor: vendedor,
+        cliente_nombre: cliente.nombre,
+        cliente_documento: cliente.documento,
+        cliente_telefono: cliente.telefono,
+        cliente_email: cliente.email,
+        cliente_direccion: cliente.direccion,
+        lista_precios: PRICE_LISTS.find(p => p.key === priceList)?.label || '',
+        total: totals.total,
+        num_productos: quoteItems.length,
+        num_unidades: quoteItems.reduce((s, it) => s + it.cantidad, 0),
+        productos_json: JSON.stringify(quoteItems.map(it => ({
+          id: it.id, nombre: it.nombre, presentacion: it.presentacion,
+          cantidad: it.cantidad, precio: it.precio, iva: it.iva
+        }))),
+        observaciones: notas,
+      });
+      setSavedId(result.id);
+      if (onSaved) onSaved(result.id);
+    } catch (e) {
+      alert('Error guardando cotización: ' + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleGeneratePDF = () => {
     if (!cliente.nombre.trim()) { alert('Ingresa al menos el nombre del cliente.'); return; }
     if (quoteItems.length === 0) { alert('Agrega al menos un producto.'); return; }
@@ -970,6 +1042,18 @@ function QuoteBuilder({ products, categories, config, company, quoteItems, setQu
               <User size={16} style={{ color: C.gold }} /> Datos del cliente
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="sm:col-span-2">
+                <label className="text-[11px] uppercase tracking-wider font-medium" style={{ color: C.muted }}>
+                  Vendedor *
+                </label>
+                <select value={vendedor}
+                  onChange={e => setVendedor(e.target.value)}
+                  className="w-full mt-1 px-3 py-2 rounded-md border text-sm outline-none bg-white"
+                  style={{ borderColor: C.border }}>
+                  <option value="">Selecciona...</option>
+                  {vendedores.map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </div>
               <div className="sm:col-span-2">
                 <label className="text-[11px] uppercase tracking-wider font-medium" style={{ color: C.muted }}>
                   Nombre / Razón social *
@@ -1226,6 +1310,22 @@ function QuoteBuilder({ products, categories, config, company, quoteItems, setQu
               </div>
             </div>
             <div className="space-y-2 mt-5">
+              {savedId ? (
+                <div className="p-3 rounded-md text-xs"
+                  style={{ backgroundColor: '#E8F4E8', color: '#2D5A2D', border: '1px solid #B8DCB8' }}>
+                  <div className="flex items-center gap-2 font-semibold mb-1">
+                    <Check size={14} /> Cotización guardada
+                  </div>
+                  <div className="font-mono">{savedId}</div>
+                </div>
+              ) : (
+                <button onClick={handleSave}
+                  disabled={saving || quoteItems.length === 0 || !cliente.nombre.trim() || !vendedor}
+                  className="w-full px-4 py-3 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ backgroundColor: C.navyDeep, color: C.paper }}>
+                  {saving ? <>⏳ Guardando...</> : <><Check size={16} /> Guardar cotización</>}
+                </button>
+              )}
               <button onClick={handleGeneratePDF}
                 disabled={quoteItems.length === 0 || !cliente.nombre.trim()}
                 className="w-full px-4 py-3 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
@@ -1325,6 +1425,368 @@ function ErrorScreen({ message, onRetry }) {
   );
 }
 
+// ============ COTIZACIONES VIEW ============
+function CotizacionesView({ onReabrir, refreshKey, company }) {
+  const [cotizaciones, setCotizaciones] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [search, setSearch] = useState('');
+  const [estadoFilter, setEstadoFilter] = useState('todas');
+  const [converting, setConverting] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const data = await apiCall('listCotizaciones');
+      setCotizaciones((data || []).reverse()); // más recientes primero
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load, refreshKey]);
+
+  const filtered = useMemo(() => cotizaciones.filter(c => {
+    const ms = !search ||
+      (c.Cliente_Nombre || '').toLowerCase().includes(search.toLowerCase()) ||
+      (c.ID || '').toLowerCase().includes(search.toLowerCase()) ||
+      (c.Vendedor || '').toLowerCase().includes(search.toLowerCase());
+    const me = estadoFilter === 'todas' || c.Estado === estadoFilter;
+    return ms && me;
+  }), [cotizaciones, search, estadoFilter]);
+
+  const handleConvertir = async (cot) => {
+    if (!confirm(`¿Convertir la cotización ${cot.ID} en pedido?`)) return;
+    setConverting(cot.ID);
+    try {
+      const result = await apiCall('convertToPedido', { cotizacion_id: cot.ID });
+      alert(`Pedido creado: ${result.id}`);
+      load();
+    } catch (e) {
+      alert('Error: ' + e.message);
+    } finally {
+      setConverting(null);
+    }
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="mb-8">
+        <div className="flex items-baseline gap-3 mb-2">
+          <span className="text-xs tracking-[0.2em] uppercase font-medium" style={{ color: C.gold }}>
+            Mis Cotizaciones
+          </span>
+          <div className="flex-1 h-px" style={{ backgroundColor: C.border }} />
+          <button onClick={load} className="text-xs flex items-center gap-1" style={{ color: C.muted }}>
+            <RefreshCw size={12} /> Refrescar
+          </button>
+        </div>
+        <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight mb-3"
+          style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep }}>
+          Cotizaciones guardadas
+        </h1>
+      </div>
+
+      <div className="flex flex-col sm:flex-row gap-3 mb-5">
+        <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-md border bg-white"
+          style={{ borderColor: C.border }}>
+          <Search size={14} style={{ color: C.muted }} />
+          <input type="text" placeholder="Buscar por cliente, código o vendedor..."
+            value={search} onChange={e => setSearch(e.target.value)}
+            className="flex-1 bg-transparent outline-none text-sm" />
+        </div>
+        <select value={estadoFilter} onChange={e => setEstadoFilter(e.target.value)}
+          className="px-3 py-2 rounded-md border text-sm outline-none bg-white"
+          style={{ borderColor: C.border }}>
+          <option value="todas">Todos los estados</option>
+          <option value="Activa">Activas</option>
+          <option value="Convertida a Pedido">Convertidas a pedido</option>
+          <option value="Anulada">Anuladas</option>
+        </select>
+      </div>
+
+      {loading ? (
+        <div className="text-center py-12" style={{ color: C.muted }}>
+          <div className="loading-spinner mx-auto mb-3"></div>
+          Cargando cotizaciones...
+        </div>
+      ) : error ? (
+        <div className="p-4 rounded-md text-sm"
+          style={{ backgroundColor: '#FEE2E2', color: '#B54545' }}>
+          Error: {error}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-16 rounded-xl border-2 border-dashed"
+          style={{ color: C.muted, borderColor: C.border }}>
+          <FileCheck size={48} style={{ opacity: 0.4, margin: '0 auto 1rem' }} />
+          <p>No hay cotizaciones todavía.</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border overflow-hidden" style={{ borderColor: C.border }}>
+          {filtered.map((cot, idx) => (
+            <div key={cot.ID} className="p-4 flex flex-col sm:flex-row gap-3 sm:items-center"
+              style={{ borderTop: idx > 0 ? `1px solid ${C.borderSoft}` : 'none' }}>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap mb-1">
+                  <span className="text-[10px] font-mono" style={{ color: C.muted }}>{cot.ID}</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded font-semibold"
+                    style={{
+                      backgroundColor: cot.Estado === 'Activa' ? '#E8F4E8' :
+                                       cot.Estado === 'Convertida a Pedido' ? '#E0E8F4' : '#F4E0E0',
+                      color: cot.Estado === 'Activa' ? '#2D5A2D' :
+                             cot.Estado === 'Convertida a Pedido' ? '#2D3E5F' : '#A03030',
+                    }}>{cot.Estado}</span>
+                </div>
+                <div className="font-medium text-sm" style={{ color: C.navyDeep }}>
+                  {cot.Cliente_Nombre}
+                </div>
+                <div className="text-xs" style={{ color: C.muted }}>
+                  {cot.Fecha} · {cot.Hora} · {cot.Vendedor} · {cot.Lista_Precios}
+                </div>
+              </div>
+              <div className="flex items-center gap-3 sm:flex-shrink-0">
+                <div className="text-right">
+                  <div className="text-[10px]" style={{ color: C.muted }}>
+                    {cot.Num_Productos} productos · {cot.Num_Unidades} und
+                  </div>
+                  <div className="font-semibold text-base" style={{ color: C.navyDeep }}>
+                    {formatCOP(cot.Total)}
+                  </div>
+                </div>
+                <div className="flex gap-1">
+                  <button onClick={() => onReabrir(cot)}
+                    className="px-3 py-2 rounded text-xs font-medium"
+                    style={{ border: `1px solid ${C.border}`, color: C.navy }}>
+                    <Eye size={14} />
+                  </button>
+                  {cot.Estado === 'Activa' && (
+                    <button onClick={() => handleConvertir(cot)}
+                      disabled={converting === cot.ID}
+                      className="px-3 py-2 rounded text-xs font-medium disabled:opacity-50"
+                      style={{ backgroundColor: C.gold, color: C.navyDeep }}>
+                      {converting === cot.ID ? '⏳' : 'A Pedido'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============ PEDIDOS VIEW ============
+function PedidosView({ refreshKey }) {
+  const [pedidos, setPedidos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [search, setSearch] = useState('');
+  const [estadoFilter, setEstadoFilter] = useState('todos');
+  const [updating, setUpdating] = useState(null);
+  const [expanded, setExpanded] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const data = await apiCall('listPedidos');
+      setPedidos((data || []).reverse());
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load, refreshKey]);
+
+  const filtered = useMemo(() => pedidos.filter(p => {
+    const ms = !search ||
+      (p.Cliente_Nombre || '').toLowerCase().includes(search.toLowerCase()) ||
+      (p.ID || '').toLowerCase().includes(search.toLowerCase()) ||
+      (p.Vendedor || '').toLowerCase().includes(search.toLowerCase());
+    const me = estadoFilter === 'todos' || p.Estado === estadoFilter;
+    return ms && me;
+  }), [pedidos, search, estadoFilter]);
+
+  const cambiarEstado = async (pedido, nuevoEstado) => {
+    setUpdating(pedido.ID);
+    try {
+      await apiCall('updateEstadoPedido', { pedido_id: pedido.ID, estado: nuevoEstado });
+      load();
+    } catch (e) {
+      alert('Error: ' + e.message);
+    } finally {
+      setUpdating(null);
+    }
+  };
+
+  const estadoColor = (estado) => {
+    if (estado === 'Pendiente') return { bg: '#FFF4D6', fg: '#7A5A1A' };
+    if (estado === 'Facturado') return { bg: '#DEE9F5', fg: '#2D5A8E' };
+    if (estado === 'Entregado') return { bg: '#E0F4E0', fg: '#2D7A2D' };
+    return { bg: C.borderSoft, fg: C.muted };
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="mb-8">
+        <div className="flex items-baseline gap-3 mb-2">
+          <span className="text-xs tracking-[0.2em] uppercase font-medium" style={{ color: C.gold }}>
+            Pedidos
+          </span>
+          <div className="flex-1 h-px" style={{ backgroundColor: C.border }} />
+          <button onClick={load} className="text-xs flex items-center gap-1" style={{ color: C.muted }}>
+            <RefreshCw size={12} /> Refrescar
+          </button>
+        </div>
+        <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight mb-3"
+          style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep }}>
+          Pedidos en proceso
+        </h1>
+      </div>
+
+      <div className="flex flex-col sm:flex-row gap-3 mb-5">
+        <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-md border bg-white"
+          style={{ borderColor: C.border }}>
+          <Search size={14} style={{ color: C.muted }} />
+          <input type="text" placeholder="Buscar por cliente, código o vendedor..."
+            value={search} onChange={e => setSearch(e.target.value)}
+            className="flex-1 bg-transparent outline-none text-sm" />
+        </div>
+        <select value={estadoFilter} onChange={e => setEstadoFilter(e.target.value)}
+          className="px-3 py-2 rounded-md border text-sm outline-none bg-white"
+          style={{ borderColor: C.border }}>
+          <option value="todos">Todos los estados</option>
+          <option value="Pendiente">Pendiente</option>
+          <option value="Facturado">Facturado</option>
+          <option value="Entregado">Entregado</option>
+        </select>
+      </div>
+
+      {loading ? (
+        <div className="text-center py-12" style={{ color: C.muted }}>
+          <div className="loading-spinner mx-auto mb-3"></div>
+          Cargando pedidos...
+        </div>
+      ) : error ? (
+        <div className="p-4 rounded-md text-sm"
+          style={{ backgroundColor: '#FEE2E2', color: '#B54545' }}>
+          Error: {error}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-16 rounded-xl border-2 border-dashed"
+          style={{ color: C.muted, borderColor: C.border }}>
+          <Package size={48} style={{ opacity: 0.4, margin: '0 auto 1rem' }} />
+          <p>No hay pedidos todavía.</p>
+          <p className="text-xs mt-2">Crea cotizaciones y conviértelas en pedidos.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(ped => {
+            const col = estadoColor(ped.Estado);
+            const isExpanded = expanded === ped.ID;
+            let productos = [];
+            try { productos = JSON.parse(ped.Productos_JSON || '[]'); } catch (e) {}
+            return (
+              <div key={ped.ID} className="bg-white rounded-xl border overflow-hidden"
+                style={{ borderColor: C.border }}>
+                <div className="p-4 flex flex-col sm:flex-row gap-3 sm:items-center">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      <span className="text-[10px] font-mono" style={{ color: C.muted }}>{ped.ID}</span>
+                      <span className="text-[10px] px-2 py-0.5 rounded font-semibold"
+                        style={{ backgroundColor: col.bg, color: col.fg }}>{ped.Estado}</span>
+                      <span className="text-[10px]" style={{ color: C.muted }}>
+                        ← {ped.Cotizacion_ID}
+                      </span>
+                    </div>
+                    <div className="font-medium text-sm" style={{ color: C.navyDeep }}>
+                      {ped.Cliente_Nombre}
+                    </div>
+                    <div className="text-xs" style={{ color: C.muted }}>
+                      {ped.Fecha} · {ped.Hora} · {ped.Vendedor}
+                      {ped.Cliente_Telefono && ` · Tel: ${ped.Cliente_Telefono}`}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 sm:flex-shrink-0">
+                    <div className="text-right">
+                      <div className="text-[10px]" style={{ color: C.muted }}>
+                        {ped.Num_Productos} productos · {ped.Num_Unidades} und
+                      </div>
+                      <div className="font-semibold text-base" style={{ color: C.navyDeep }}>
+                        {formatCOP(ped.Total)}
+                      </div>
+                    </div>
+                    <button onClick={() => setExpanded(isExpanded ? null : ped.ID)}
+                      className="px-3 py-2 rounded text-xs font-medium"
+                      style={{ border: `1px solid ${C.border}`, color: C.navy }}>
+                      <Eye size={14} />
+                    </button>
+                  </div>
+                </div>
+                <div className="px-4 pb-3 flex flex-wrap gap-1.5">
+                  <span className="text-[10px] uppercase tracking-wider self-center mr-1"
+                    style={{ color: C.muted }}>Cambiar a:</span>
+                  {['Pendiente', 'Facturado', 'Entregado'].map(estado => {
+                    const eCol = estadoColor(estado);
+                    const isCurrent = ped.Estado === estado;
+                    return (
+                      <button key={estado}
+                        onClick={() => !isCurrent && cambiarEstado(ped, estado)}
+                        disabled={isCurrent || updating === ped.ID}
+                        className="px-2.5 py-1 rounded-full text-[11px] font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{
+                          backgroundColor: isCurrent ? eCol.bg : 'transparent',
+                          color: isCurrent ? eCol.fg : C.navy,
+                          border: `1px solid ${isCurrent ? eCol.bg : C.border}`,
+                        }}>
+                        {updating === ped.ID ? '⏳' : estado}
+                      </button>
+                    );
+                  })}
+                </div>
+                {isExpanded && (
+                  <div className="px-4 pb-4 border-t pt-3" style={{ borderColor: C.borderSoft }}>
+                    <div className="text-[10px] uppercase tracking-wider mb-2 font-semibold" style={{ color: C.muted }}>
+                      Productos del pedido
+                    </div>
+                    <div className="space-y-1">
+                      {productos.map(it => (
+                        <div key={it.id} className="flex justify-between text-xs">
+                          <div>
+                            <span className="font-mono mr-2" style={{ color: C.muted }}>{it.id}</span>
+                            <span style={{ color: C.navyDeep }}>{it.nombre}</span>
+                            <span style={{ color: C.muted }}> · {it.presentacion}</span>
+                          </div>
+                          <div className="text-right whitespace-nowrap" style={{ color: C.navyDeep }}>
+                            {it.cantidad} × {formatCOP(it.precio)} = <span className="font-semibold">{formatCOP(it.cantidad * it.precio)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {ped.Observaciones && (
+                      <div className="mt-3 pt-3 border-t" style={{ borderColor: C.borderSoft }}>
+                        <div className="text-[10px] uppercase tracking-wider mb-1 font-semibold" style={{ color: C.muted }}>
+                          Observaciones
+                        </div>
+                        <div className="text-xs" style={{ color: C.ink }}>{ped.Observaciones}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Main App
 function App() {
   const [view, setView] = useState('catalog');
@@ -1336,9 +1798,10 @@ function App() {
   const [showLogin, setShowLogin] = useState(false);
   const [quoteItems, setQuoteItems] = useState([]);
 
-  const [data, setData] = useState({ productos: [], categorias: [], config: {} });
+  const [data, setData] = useState({ productos: [], categorias: [], config: {}, vendedores: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const loadData = useCallback(async () => {
     setLoading(true); setError(null);
@@ -1418,8 +1881,10 @@ function App() {
   const navItems = isStaff
     ? [
         { key: 'catalog', label: 'Catálogo', Icon: LayoutGrid },
-        { key: 'prices', label: 'Listas de Precios', Icon: List },
+        { key: 'prices', label: 'Precios', Icon: List },
         { key: 'quote', label: 'Cotización', Icon: FileCheck, badge: quoteItems.length },
+        { key: 'cotizaciones', label: 'Mis Cotizaciones', Icon: FileText },
+        { key: 'pedidos', label: 'Pedidos', Icon: ShoppingCart },
       ]
     : [{ key: 'catalog', label: 'Catálogo', Icon: LayoutGrid }];
 
@@ -1526,7 +1991,29 @@ function App() {
         {view === 'quote' && isStaff && (
           <QuoteBuilder products={data.productos} categories={data.categorias}
             config={data.config} company={company}
-            quoteItems={quoteItems} setQuoteItems={setQuoteItems} />
+            vendedores={data.vendedores || []}
+            quoteItems={quoteItems} setQuoteItems={setQuoteItems}
+            onSaved={() => setRefreshKey(k => k + 1)} />
+        )}
+        {view === 'cotizaciones' && isStaff && (
+          <CotizacionesView refreshKey={refreshKey} company={company}
+            onReabrir={(cot) => {
+              try {
+                const items = JSON.parse(cot.Productos_JSON || '[]');
+                const itemsWithCat = items.map(it => {
+                  const p = data.productos.find(pp => pp.id === it.id);
+                  return { ...it, categoria: p ? p.categoria : '' };
+                });
+                setQuoteItems(itemsWithCat);
+                setView('quote');
+                showToast('Cotización cargada en el constructor');
+              } catch (e) {
+                alert('Error al reabrir: ' + e.message);
+              }
+            }} />
+        )}
+        {view === 'pedidos' && isStaff && (
+          <PedidosView refreshKey={refreshKey} />
         )}
       </main>
 
