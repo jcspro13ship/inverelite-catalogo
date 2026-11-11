@@ -21,7 +21,20 @@ Aplicación web de catálogo de productos, listas de precios y cotizaciones para
 
 ## 🔑 Acceso del equipo
 
-La contraseña para acceder a las listas de precios y cotizaciones se configura desde el Sheet, en la pestaña `Config`, fila `password_equipo`.
+La contraseña se valida en el servidor (Apps Script) y se guarda en las **Propiedades del script** con el nombre `PASSWORD_EQUIPO` (Apps Script → Configuración del proyecto). Ya no va en la pestaña `Config`, porque esa hoja es pública.
+
+Con la sesión iniciada el equipo puede:
+
+- Ver la **ficha interna** de cada producto (dosis, almacenamiento, transporte, notas), guardada en la pestaña privada `Fichas`.
+- **Editar** cualquier producto y su ficha desde el botón "Editar".
+- **Subir fotos** desde el celular o el computador; se guardan en la carpeta de fotos de Drive configurada en `FOTOS_FOLDER_ID`.
+- **Activar o desactivar** productos del catálogo y filtrar los que no tienen foto.
+
+La pestaña `Fichas` **no debe publicarse en la web**.
+
+## ⚙️ Apps Script
+
+El código del servidor está en `apps-script/Code.gs`. Para actualizarlo: pegarlo en Extensiones → Apps Script, ejecutar `setup` una vez y publicar una **nueva versión** de la implementación existente (así se conserva la URL).
 
 ## 📁 Estructura del proyecto
 
@@ -30,6 +43,7 @@ inverelite-catalogo/
 ├── index.html       ← Página principal (no editar)
 ├── config.js        ← URLs del Google Sheet (editar solo si cambias el Sheet)
 ├── app.js           ← Lógica de la app (no editar)
+├── apps-script/     ← Código del servidor (se pega en Apps Script)
 └── README.md        ← Este archivo
 ```
 

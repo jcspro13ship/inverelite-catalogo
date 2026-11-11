@@ -58,7 +58,9 @@ const Search = makeIcon('Search'), Package = makeIcon('Package'),
   Building2 = makeIcon('Building2'), AlertCircle = makeIcon('AlertCircle'),
   Leaf = makeIcon('Leaf'), Heart = makeIcon('Heart'),
   Shield = makeIcon('Shield'), Zap = makeIcon('Zap'),
-  Box = makeIcon('Box'), RefreshCw = makeIcon('RefreshCw');
+  Box = makeIcon('Box'), RefreshCw = makeIcon('RefreshCw'),
+  Pencil = makeIcon('Pencil'), Camera = makeIcon('Camera'),
+  EyeOff = makeIcon('EyeOff'), ClipboardList = makeIcon('ClipboardList');
 
 const ICONS = {
   syringe: Syringe, pill: Pill, beaker: Beaker, droplet: Droplet,
@@ -140,13 +142,16 @@ async function fetchCSV(url) {
 }
 
 // =================== API (Apps Script) ===================
+// La contraseña del equipo vive solo en memoria y se valida en el servidor.
+let STAFF_PW = '';
+
 async function apiCall(action, params = {}) {
   const cfg = window.INVERELITE_CONFIG;
   if (!cfg || !cfg.URL_API) throw new Error('URL_API no configurada');
   // Apps Script no permite headers personalizados sin CORS preflight,
   // así que usamos POST con text/plain (que NO dispara preflight)
   const url = cfg.URL_API;
-  const body = JSON.stringify({ action, ...params });
+  const body = JSON.stringify({ action, password: STAFF_PW, ...params });
   const resp = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -175,6 +180,71 @@ async function fetchVendedores() {
   }
 }
 
+const mapProducto = (p) => ({
+  id: String(p.ID),
+  nombre: p.Nombre || '',
+  proveedor: p.Proveedor || '',
+  marca: p.Marca || '',
+  categoria: p.Categoria || '',
+  presentacion: p.Presentacion || '',
+  pv: parseInt((p.Precio_PV || '0').toString().replace(/[^0-9]/g, '')) || 0,
+  pub: parseInt((p.Precio_Pub || '0').toString().replace(/[^0-9]/g, '')) || 0,
+  iva: parseInt(p.IVA_Incluido || p.IVA || '0') || 0,
+  descComercial: p.Descripcion_Comercial || '',
+  descTecnica: p.Descripcion_Tecnica || '',
+  foto: normalizePhotoURL(p.Foto_URL),
+  activo: (p.Activo || '').toString().toUpperCase() === 'SI',
+});
+
+// Ficha técnica interna (hoja privada "Fichas")
+const FICHA_CAMPOS = [
+  { key: 'Composicion', label: 'Composición' },
+  { key: 'Beneficios', label: 'Beneficios' },
+  { key: 'Indicacion', label: 'Indicación' },
+  { key: 'Dosis', label: 'Dosis sugerida' },
+  { key: 'Almacenamiento', label: 'Almacenamiento' },
+  { key: 'Transporte', label: 'Transporte' },
+  { key: 'Notas_Internas', label: 'Notas internas' },
+];
+const ESTADOS_DATO = {
+  Confirmado: { bg: '#E3F1E6', fg: '#256B3A' },
+  Verificar: { bg: '#FBEFD2', fg: '#8A5A00' },
+  Pendiente: { bg: '#ECEAE4', fg: '#5F5F5F' },
+};
+
+// Datos completos para el equipo: todos los productos (también inactivos) y sus fichas
+async function loadStaffData() {
+  const [productosRaw, fichasRaw] = await Promise.all([
+    apiCall('listProductos'), apiCall('listFichas'),
+  ]);
+  const fichas = {};
+  (fichasRaw || []).forEach(f => { if (f.ID) fichas[String(f.ID)] = f; });
+  return { productos: (productosRaw || []).filter(p => p.ID).map(mapProducto), fichas };
+}
+
+// Reduce la foto a un tamaño adecuado para el catálogo, conservando buena calidad
+function prepararFoto(file, maxLado = 1600, calidad = 0.9) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const escala = Math.min(1, maxLado / Math.max(img.width, img.height));
+      const w = Math.round(img.width * escala), h = Math.round(img.height * escala);
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      const dataUrl = canvas.toDataURL('image/jpeg', calidad);
+      resolve({ dataUrl, base64: dataUrl.split(',')[1], mime: 'image/jpeg', ancho: w, alto: h, original: Math.max(img.width, img.height) });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('No se pudo leer la imagen')); };
+    img.src = url;
+  });
+}
+
 async function loadAllData() {
   const cfg = window.INVERELITE_CONFIG;
   if (!cfg || !cfg.URL_PRODUCTOS || cfg.URL_PRODUCTOS.includes('PEGAR_AQUI')) {
@@ -189,20 +259,7 @@ async function loadAllData() {
 
   const productos = productosRaw
     .filter(p => (p.Activo || '').toUpperCase() === 'SI' && p.ID)
-    .map(p => ({
-      id: p.ID,
-      nombre: p.Nombre || '',
-      proveedor: p.Proveedor || '',
-      marca: p.Marca || '',
-      categoria: p.Categoria || '',
-      presentacion: p.Presentacion || '',
-      pv: parseInt((p.Precio_PV || '0').toString().replace(/[^0-9]/g, '')) || 0,
-      pub: parseInt((p.Precio_Pub || '0').toString().replace(/[^0-9]/g, '')) || 0,
-      iva: parseInt(p.IVA_Incluido || p.IVA || '0') || 0,
-      descComercial: p.Descripcion_Comercial || '',
-      descTecnica: p.Descripcion_Tecnica || '',
-      foto: normalizePhotoURL(p.Foto_URL),
-    }));
+    .map(mapProducto);
 
   const categorias = categoriasRaw
     .filter(c => c.key)
@@ -279,14 +336,18 @@ function ProductVisual({ producto, categoria, size = 'md' }) {
 }
 
 // Login Modal
-function LoginModal({ show, onClose, onLogin, password }) {
+function LoginModal({ show, onClose, onLogin }) {
   const [input, setInput] = useState('');
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   if (!show) return null;
 
-  const submit = () => {
-    if (input === password) { onLogin(); setInput(''); setError(''); }
-    else { setError('Contraseña incorrecta'); }
+  const submit = async () => {
+    if (!input || busy) return;
+    setBusy(true); setError('');
+    try { await onLogin(input); setInput(''); }
+    catch (e) { setError(e.message || 'No se pudo iniciar sesión'); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -315,8 +376,9 @@ function LoginModal({ show, onClose, onLogin, password }) {
         <div className="flex gap-2 mt-3">
           <button onClick={onClose} className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium"
             style={{ border: `1px solid ${C.border}`, color: C.navy }}>Cancelar</button>
-          <button onClick={submit} className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium"
-            style={{ backgroundColor: C.navyDeep, color: C.paper }}>Ingresar</button>
+          <button onClick={submit} disabled={busy} className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium"
+            style={{ backgroundColor: C.navyDeep, color: C.paper, opacity: busy ? 0.6 : 1 }}>
+            {busy ? 'Verificando…' : 'Ingresar'}</button>
         </div>
       </div>
     </div>
@@ -328,6 +390,9 @@ function CatalogView({ products, categories, isStaff, onOpen, onShare }) {
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState('todas');
   const [provFilter, setProvFilter] = useState('todos');
+  const [staffFilter, setStaffFilter] = useState('todos');
+  const sinFoto = products.filter(p => !p.foto).length;
+  const inactivos = products.filter(p => p.activo === false).length;
 
   const proveedores = useMemo(() =>
     [...new Set(products.map(p => p.proveedor).filter(Boolean))], [products]);
@@ -338,8 +403,10 @@ function CatalogView({ products, categories, isStaff, onOpen, onShare }) {
       (p.proveedor || '').toLowerCase().includes(search.toLowerCase());
     const mc = catFilter === 'todas' || p.categoria === catFilter;
     const mp = provFilter === 'todos' || p.proveedor === provFilter;
-    return ms && mc && mp;
-  }), [search, catFilter, provFilter, products]);
+    const mst = !isStaff || staffFilter === 'todos' ||
+      (staffFilter === 'sinfoto' && !p.foto) || (staffFilter === 'inactivos' && p.activo === false);
+    return ms && mc && mp && mst;
+  }), [search, catFilter, provFilter, staffFilter, isStaff, products]);
 
   const getCat = (key) => categories.find(c => c.key === key);
 
@@ -406,6 +473,28 @@ function CatalogView({ products, categories, isStaff, onOpen, onShare }) {
         </div>
       )}
 
+      {isStaff && (
+        <div className="mb-4 flex flex-wrap gap-2 items-center">
+          <span className="text-xs uppercase tracking-wider font-medium mr-1 flex items-center gap-1"
+            style={{ color: C.muted }}>
+            <ClipboardList size={12} /> Equipo:
+          </span>
+          {[
+            { key: 'todos', label: 'Todos' },
+            { key: 'sinfoto', label: `Sin foto (${sinFoto})` },
+            { key: 'inactivos', label: `Inactivos (${inactivos})` },
+          ].map(f => (
+            <button key={f.key} onClick={() => setStaffFilter(f.key)}
+              className="px-3 py-1 rounded-full text-xs font-medium"
+              style={{
+                backgroundColor: staffFilter === f.key ? C.navyDeep : 'transparent',
+                color: staffFilter === f.key ? C.paper : C.navy,
+                border: `1px solid ${staffFilter === f.key ? C.navyDeep : C.border}`,
+              }}>{f.label}</button>
+          ))}
+        </div>
+      )}
+
       <div className="mb-8 flex flex-wrap gap-2">
         <button onClick={() => setCatFilter('todas')}
           className="px-4 py-2 rounded-full text-sm font-medium"
@@ -444,12 +533,16 @@ function CatalogView({ products, categories, isStaff, onOpen, onShare }) {
           {filtered.map(p => (
             <div key={p.id}
               className="rounded-xl overflow-hidden border hover:shadow-xl cursor-pointer bg-white transition-all"
-              style={{ borderColor: C.border }} onClick={() => onOpen(p)}>
+              style={{ borderColor: C.border, opacity: p.activo === false ? 0.55 : 1 }} onClick={() => onOpen(p)}>
               <ProductVisual producto={p} categoria={getCat(p.categoria)} />
               <div className="p-4">
                 <div className="flex items-start justify-between gap-2 mb-1">
                   <span className="text-[10px] font-mono tracking-wider" style={{ color: C.muted }}>
                     {p.id}
+                    {p.activo === false && (
+                      <span className="ml-2 px-1.5 py-0.5 rounded font-sans font-semibold"
+                        style={{ backgroundColor: '#F3DCDC', color: '#8F2F2F' }}>INACTIVO</span>
+                    )}
                   </span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded font-medium"
                     style={{ backgroundColor: C.borderSoft, color: C.muted }}>
@@ -492,8 +585,10 @@ function CatalogView({ products, categories, isStaff, onOpen, onShare }) {
 }
 
 // Product Detail
-function ProductDetail({ producto, categories, config, isStaff, onClose, onShare, onAddToQuote }) {
+function ProductDetail({ producto, categories, config, isStaff, ficha, onEdit, onClose, onShare, onAddToQuote }) {
   if (!producto) return null;
+  const camposFicha = FICHA_CAMPOS.filter(c => ficha && (ficha[c.key] || '').trim());
+  const estado = ficha && ESTADOS_DATO[ficha.Estado_Dato] ? ficha.Estado_Dato : null;
   const cat = categories.find(c => c.key === producto.categoria);
   const margenVet = parseFloat(config.margen_veterinario || '5');
 
@@ -555,6 +650,53 @@ function ProductDetail({ producto, categories, config, isStaff, onClose, onShare
             </div>
           )}
 
+          {isStaff && (
+            <div className="mb-5 p-4 rounded-lg border" style={{ borderColor: C.border, backgroundColor: C.paper }}>
+              <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
+                <div className="text-[10px] tracking-[0.15em] uppercase font-semibold flex items-center gap-1"
+                  style={{ color: C.navy }}>
+                  <ClipboardList size={12} /> Ficha del equipo (interna)
+                </div>
+                <div className="flex items-center gap-2">
+                  {producto.activo === false && (
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded"
+                      style={{ backgroundColor: '#F3DCDC', color: '#8F2F2F' }}>INACTIVO</span>
+                  )}
+                  {estado && (
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded"
+                      style={{ backgroundColor: ESTADOS_DATO[estado].bg, color: ESTADOS_DATO[estado].fg }}>
+                      {estado}
+                    </span>
+                  )}
+                  <button onClick={() => onEdit(producto)}
+                    className="text-xs font-medium px-2.5 py-1 rounded-md flex items-center gap-1"
+                    style={{ backgroundColor: C.gold, color: C.navyDeep }}>
+                    <Pencil size={12} /> Editar
+                  </button>
+                </div>
+              </div>
+              {camposFicha.length === 0 ? (
+                <p className="text-xs" style={{ color: C.muted }}>
+                  Sin ficha todavía. Usa "Editar" para agregar dosis, almacenamiento y transporte.
+                </p>
+              ) : (
+                <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+                  {camposFicha.map(c => (
+                    <div key={c.key} className={c.key === 'Dosis' || c.key === 'Notas_Internas' ? 'sm:col-span-2' : ''}>
+                      <dt className="text-[10px] uppercase tracking-wider mb-0.5" style={{ color: C.muted }}>{c.label}</dt>
+                      <dd className="text-sm leading-relaxed" style={{ color: C.ink, whiteSpace: 'pre-line' }}>{ficha[c.key]}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+              {estado && estado !== 'Confirmado' && (
+                <p className="text-[11px] mt-3 pt-3 border-t" style={{ color: ESTADOS_DATO.Verificar.fg, borderColor: C.borderSoft }}>
+                  Dato sin confirmar: no usar en propuestas ni con clientes hasta verificar la etiqueta colombiana.
+                </p>
+              )}
+            </div>
+          )}
+
           {isStaff ? (
             <div className="grid grid-cols-3 gap-3 mb-4">
               {PRICE_LISTS.map(pl => (
@@ -592,7 +734,7 @@ function ProductDetail({ producto, categories, config, isStaff, onClose, onShare
               style={{ backgroundColor: 'transparent', color: C.navyDeep, border: `1.5px solid ${C.navyDeep}` }}>
               <Share2 size={16} /> Compartir producto
             </button>
-            {isStaff && (
+            {isStaff && producto.activo !== false && (
               <button onClick={() => onAddToQuote(producto)}
                 className="flex-1 px-4 py-3 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
                 style={{ backgroundColor: C.navyDeep, color: C.paper }}>
@@ -600,6 +742,188 @@ function ProductDetail({ producto, categories, config, isStaff, onClose, onShare
               </button>
             )}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Product Editor (solo equipo)
+const Campo = ({ label, children, full }) => (
+  <label className={`block ${full ? 'sm:col-span-2' : ''}`}>
+    <span className="block text-[10px] uppercase tracking-wider mb-1 font-medium" style={{ color: C.muted }}>{label}</span>
+    {children}
+  </label>
+);
+const Titulo = ({ children }) => (
+  <div className="text-[10px] tracking-[0.15em] uppercase font-semibold mb-3 mt-6" style={{ color: C.gold }}>{children}</div>
+);
+
+function ProductEditor({ producto, ficha, categories, onClose, onSaved, onToast }) {
+  const [form, setForm] = useState(() => ({
+    Nombre: producto.nombre, Proveedor: producto.proveedor, Marca: producto.marca,
+    Categoria: producto.categoria, Presentacion: producto.presentacion,
+    Precio_PV: String(producto.pv || ''), Precio_Pub: String(producto.pub || ''),
+    IVA_Incluido: String(producto.iva || 0),
+    Descripcion_Comercial: producto.descComercial, Descripcion_Tecnica: producto.descTecnica,
+    Activo: producto.activo === false ? 'NO' : 'SI',
+  }));
+  const [fichaForm, setFichaForm] = useState(() => {
+    const f = { Estado_Dato: (ficha && ficha.Estado_Dato) || 'Pendiente' };
+    FICHA_CAMPOS.forEach(c => { f[c.key] = (ficha && ficha[c.key]) || ''; });
+    return f;
+  });
+  const [foto, setFoto] = useState(producto.foto);
+  const [fotoInfo, setFotoInfo] = useState('');
+  const [subiendo, setSubiendo] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState('');
+
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+  const setF = (k) => (e) => setFichaForm(f => ({ ...f, [k]: e.target.value }));
+
+  const construir = (fotoUrl) => ({
+    producto: {
+      ...producto, nombre: form.Nombre, proveedor: form.Proveedor, marca: form.Marca,
+      categoria: form.Categoria, presentacion: form.Presentacion,
+      pv: parseInt(String(form.Precio_PV).replace(/[^0-9]/g, '')) || 0,
+      pub: parseInt(String(form.Precio_Pub).replace(/[^0-9]/g, '')) || 0,
+      iva: parseInt(form.IVA_Incluido) || 0,
+      descComercial: form.Descripcion_Comercial, descTecnica: form.Descripcion_Tecnica,
+      activo: form.Activo === 'SI', foto: fotoUrl,
+    },
+    ficha: { ID: producto.id, ...fichaForm },
+  });
+
+  const elegirFoto = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    setError(''); setSubiendo(true);
+    try {
+      const img = await prepararFoto(file);
+      const res = await apiCall('uploadFoto', { id: producto.id, data: img.base64, mime: img.mime });
+      setFoto(img.dataUrl);
+      setFotoInfo(`${img.ancho} × ${img.alto} px` + (img.original < 800 ? ' — foto pequeña, puede verse borrosa' : ''));
+      onSaved({ ...producto, foto: normalizePhotoURL(res.url) }, null, true);
+      onToast('Foto guardada');
+    } catch (err) { setError('No se pudo subir la foto: ' + err.message); }
+    finally { setSubiendo(false); }
+  };
+
+  const guardar = async () => {
+    setError(''); setGuardando(true);
+    try {
+      await apiCall('saveProducto', { id: producto.id, producto: form, ficha: fichaForm });
+      const r = construir(producto.foto);
+      onSaved(r.producto, r.ficha, false);
+      onToast('Cambios guardados');
+    } catch (err) { setError('No se pudo guardar: ' + err.message); }
+    finally { setGuardando(false); }
+  };
+
+  const inputCls = "w-full px-3 py-2 rounded-lg border text-sm outline-none bg-white";
+  const activo = form.Activo === 'SI';
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-6"
+      style={{ backgroundColor: 'rgba(15,30,61,0.7)' }}>
+      <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-3xl max-h-[94vh] overflow-y-auto shadow-2xl">
+        <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b bg-white"
+          style={{ borderColor: C.border }}>
+          <div>
+            <div className="text-[10px] font-mono tracking-wider" style={{ color: C.muted }}>{producto.id}</div>
+            <h3 className="text-lg font-semibold" style={{ fontFamily: "'Fraunces', serif", color: C.navyDeep }}>
+              Editar producto
+            </h3>
+          </div>
+          <button onClick={onClose} className="w-9 h-9 rounded-full flex items-center justify-center"
+            style={{ backgroundColor: C.borderSoft, color: C.navyDeep }}><X size={18} /></button>
+        </div>
+
+        <div className="px-6 pb-6">
+          <Titulo>Foto y estado</Titulo>
+          <div className="flex flex-col sm:flex-row gap-4 items-start">
+            <div className="w-full sm:w-44 h-44 rounded-lg border flex items-center justify-center overflow-hidden"
+              style={{ borderColor: C.border, backgroundColor: C.cream }}>
+              {foto
+                ? <img src={foto} alt="" className="w-full h-full object-contain p-2" />
+                : <span className="text-xs" style={{ color: C.muted }}>Sin foto</span>}
+            </div>
+            <div className="flex-1">
+              <label className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium cursor-pointer"
+                style={{ backgroundColor: C.navyDeep, color: C.paper, opacity: subiendo ? 0.6 : 1 }}>
+                <Camera size={16} /> {subiendo ? 'Subiendo…' : (foto ? 'Cambiar foto' : 'Subir foto')}
+                <input type="file" accept="image/*" className="hidden" disabled={subiendo} onChange={elegirFoto} />
+              </label>
+              <p className="text-xs mt-2" style={{ color: C.muted }}>
+                Desde el celular puedes tomarla con la cámara. Se ajusta sola a 1600 px y se guarda al instante.
+                Mejor con fondo claro y el producto centrado.
+              </p>
+              {fotoInfo && <p className="text-xs mt-1" style={{ color: C.navy }}>{fotoInfo}</p>}
+
+              <button type="button" onClick={() => setForm(f => ({ ...f, Activo: activo ? 'NO' : 'SI' }))}
+                className="mt-4 flex items-center gap-3" role="switch" aria-checked={activo}>
+                <span className="relative inline-block rounded-full transition-colors"
+                  style={{ width: 44, height: 24, backgroundColor: activo ? '#2E7D4F' : '#B9B4A8' }}>
+                  <span className="absolute rounded-full bg-white transition-all"
+                    style={{ width: 18, height: 18, top: 3, left: activo ? 23 : 3 }} />
+                </span>
+                <span className="text-sm font-medium" style={{ color: C.navyDeep }}>
+                  {activo ? 'Activo: visible en el catálogo' : 'Inactivo: oculto para los clientes'}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <Titulo>Datos del producto (públicos)</Titulo>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Campo label="Nombre" full><input className={inputCls} style={{ borderColor: C.border }} value={form.Nombre} onChange={set('Nombre')} /></Campo>
+            <Campo label="Presentación"><input className={inputCls} style={{ borderColor: C.border }} value={form.Presentacion} onChange={set('Presentacion')} /></Campo>
+            <Campo label="Categoría">
+              <select className={inputCls} style={{ borderColor: C.border }} value={form.Categoria} onChange={set('Categoria')}>
+                {categories.map(c => <option key={c.key} value={c.key}>{c.nombre}</option>)}
+              </select>
+            </Campo>
+            <Campo label="Proveedor"><input className={inputCls} style={{ borderColor: C.border }} value={form.Proveedor} onChange={set('Proveedor')} /></Campo>
+            <Campo label="Marca"><input className={inputCls} style={{ borderColor: C.border }} value={form.Marca} onChange={set('Marca')} /></Campo>
+            <Campo label="Precio público (IVA incl.)"><input inputMode="numeric" className={inputCls} style={{ borderColor: C.border }} value={form.Precio_Pub} onChange={set('Precio_Pub')} /></Campo>
+            <Campo label="Precio punto de venta"><input inputMode="numeric" className={inputCls} style={{ borderColor: C.border }} value={form.Precio_PV} onChange={set('Precio_PV')} /></Campo>
+            <Campo label="IVA incluido (%)"><input inputMode="numeric" className={inputCls} style={{ borderColor: C.border }} value={form.IVA_Incluido} onChange={set('IVA_Incluido')} /></Campo>
+            <Campo label="Descripción comercial" full><textarea rows={3} className={inputCls} style={{ borderColor: C.border }} value={form.Descripcion_Comercial} onChange={set('Descripcion_Comercial')} /></Campo>
+            <Campo label="Descripción técnica" full><textarea rows={2} className={inputCls} style={{ borderColor: C.border }} value={form.Descripcion_Tecnica} onChange={set('Descripcion_Tecnica')} /></Campo>
+          </div>
+
+          <Titulo>Ficha del equipo (privada)</Titulo>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Campo label="Dosis sugerida o recomendada" full><textarea rows={3} className={inputCls} style={{ borderColor: C.border }} value={fichaForm.Dosis} onChange={setF('Dosis')} /></Campo>
+            <Campo label="Condiciones de almacenamiento"><textarea rows={2} className={inputCls} style={{ borderColor: C.border }} value={fichaForm.Almacenamiento} onChange={setF('Almacenamiento')} /></Campo>
+            <Campo label="Condiciones de transporte"><textarea rows={2} className={inputCls} style={{ borderColor: C.border }} value={fichaForm.Transporte} onChange={setF('Transporte')} /></Campo>
+            <Campo label="Composición"><textarea rows={2} className={inputCls} style={{ borderColor: C.border }} value={fichaForm.Composicion} onChange={setF('Composicion')} /></Campo>
+            <Campo label="Indicación"><textarea rows={2} className={inputCls} style={{ borderColor: C.border }} value={fichaForm.Indicacion} onChange={setF('Indicacion')} /></Campo>
+            <Campo label="Beneficios" full><textarea rows={2} className={inputCls} style={{ borderColor: C.border }} value={fichaForm.Beneficios} onChange={setF('Beneficios')} /></Campo>
+            <Campo label="Notas internas" full><textarea rows={2} className={inputCls} style={{ borderColor: C.border }} value={fichaForm.Notas_Internas} onChange={setF('Notas_Internas')} /></Campo>
+            <Campo label="Estado del dato">
+              <select className={inputCls} style={{ borderColor: C.border }} value={fichaForm.Estado_Dato} onChange={setF('Estado_Dato')}>
+                {Object.keys(ESTADOS_DATO).map(k => <option key={k} value={k}>{k}</option>)}
+              </select>
+            </Campo>
+          </div>
+
+          {error && <div className="text-sm mt-4 p-3 rounded-lg" style={{ backgroundColor: '#F8E4E4', color: '#8F2F2F' }}>{error}</div>}
+
+          <div className="flex gap-2 mt-6 pt-4 border-t" style={{ borderColor: C.borderSoft }}>
+            <button onClick={onClose} className="flex-1 px-4 py-3 rounded-lg text-sm font-medium"
+              style={{ border: `1px solid ${C.border}`, color: C.navy }}>Cancelar</button>
+            <button onClick={guardar} disabled={guardando || subiendo}
+              className="flex-1 px-4 py-3 rounded-lg text-sm font-medium"
+              style={{ backgroundColor: C.navyDeep, color: C.paper, opacity: guardando ? 0.6 : 1 }}>
+              {guardando ? 'Guardando…' : 'Guardar cambios'}
+            </button>
+          </div>
+          <p className="text-[11px] mt-3" style={{ color: C.muted }}>
+            Los clientes verán los cambios públicos en 5 a 10 minutos, cuando Google republique la hoja.
+          </p>
         </div>
       </div>
     </div>
@@ -1797,6 +2121,8 @@ function App() {
   const [mobileMenu, setMobileMenu] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
   const [quoteItems, setQuoteItems] = useState([]);
+  const [staffData, setStaffData] = useState(null); // { productos, fichas } tras iniciar sesión
+  const [editing, setEditing] = useState(null);
 
   const [data, setData] = useState({ productos: [], categorias: [], config: {}, vendedores: [] });
   const [loading, setLoading] = useState(true);
@@ -1846,7 +2172,37 @@ function App() {
     slogan: data.config.slogan || 'Insumos agropecuarios de confianza',
   }), [data.config]);
 
-  const staffPassword = data.config.password_equipo || 'inverelite2026';
+  // En modo equipo se usan los datos del servidor (incluyen inactivos y cambios recién guardados)
+  const productos = isStaff && staffData ? staffData.productos : data.productos;
+  const activos = useMemo(() => productos.filter(p => p.activo !== false), [productos]);
+  const fichas = (isStaff && staffData && staffData.fichas) || {};
+
+  const handleLogin = async (pw) => {
+    STAFF_PW = pw;
+    try {
+      await apiCall('login');
+      setStaffData(await loadStaffData());
+    } catch (e) {
+      STAFF_PW = '';
+      throw e;
+    }
+    setIsStaff(true); setShowLogin(false); showToast('Sesión iniciada');
+  };
+
+  const handleLogout = () => {
+    STAFF_PW = ''; setStaffData(null); setEditing(null);
+    setIsStaff(false); setView('catalog'); showToast('Sesión cerrada');
+  };
+
+  const handleSaved = (prod, ficha, keepOpen) => {
+    setStaffData(sd => sd && ({
+      productos: sd.productos.map(p => p.id === prod.id ? { ...p, ...prod } : p),
+      fichas: ficha ? { ...sd.fichas, [prod.id]: ficha } : sd.fichas,
+    }));
+    setSelectedProduct(sp => sp && sp.id === prod.id ? { ...sp, ...prod } : sp);
+    if (keepOpen) setEditing(ed => ed && ed.id === prod.id ? { ...ed, foto: prod.foto } : ed);
+    else setEditing(null);
+  };
 
   const handleAddToQuote = (producto) => {
     const margenVet = parseFloat(data.config.margen_veterinario || '5');
@@ -1918,7 +2274,7 @@ function App() {
                 );
               })}
               {isStaff ? (
-                <button onClick={() => { setIsStaff(false); setView('catalog'); showToast('Sesión cerrada'); }}
+                <button onClick={handleLogout}
                   className="ml-2 px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-2"
                   style={{ color: C.muted, border: `1px solid ${C.border}` }}>
                   <LogOut size={14} /> Salir
@@ -1963,7 +2319,7 @@ function App() {
               );
             })}
             {isStaff ? (
-              <button onClick={() => { setIsStaff(false); setView('catalog'); setMobileMenu(false); showToast('Sesión cerrada'); }}
+              <button onClick={() => { handleLogout(); setMobileMenu(false); }}
                 className="w-full px-6 py-3 text-left text-sm font-medium flex items-center gap-3"
                 style={{ color: C.muted }}>
                 <LogOut size={14} /> Cerrar sesión
@@ -1981,15 +2337,15 @@ function App() {
 
       <main>
         {view === 'catalog' && (
-          <CatalogView products={data.productos} categories={data.categorias} isStaff={isStaff}
+          <CatalogView products={productos} categories={data.categorias} isStaff={isStaff}
             onOpen={setSelectedProduct} onShare={setShareProduct} />
         )}
         {view === 'prices' && isStaff && (
-          <PriceListView products={data.productos} categories={data.categorias}
+          <PriceListView products={activos} categories={data.categorias}
             config={data.config} company={company} />
         )}
         {view === 'quote' && isStaff && (
-          <QuoteBuilder products={data.productos} categories={data.categorias}
+          <QuoteBuilder products={activos} categories={data.categorias}
             config={data.config} company={company}
             vendedores={data.vendedores || []}
             quoteItems={quoteItems} setQuoteItems={setQuoteItems}
@@ -2001,7 +2357,7 @@ function App() {
               try {
                 const items = JSON.parse(cot.Productos_JSON || '[]');
                 const itemsWithCat = items.map(it => {
-                  const p = data.productos.find(pp => pp.id === it.id);
+                  const p = productos.find(pp => pp.id === it.id);
                   return { ...it, categoria: p ? p.categoria : '' };
                 });
                 setQuoteItems(itemsWithCat);
@@ -2037,14 +2393,18 @@ function App() {
       </footer>
 
       <ProductDetail producto={selectedProduct} categories={data.categorias} config={data.config}
-        isStaff={isStaff} onClose={() => setSelectedProduct(null)}
+        isStaff={isStaff} ficha={selectedProduct ? fichas[selectedProduct.id] : null}
+        onEdit={setEditing} onClose={() => setSelectedProduct(null)}
         onShare={(p) => { setSelectedProduct(null); setShareProduct(p); }}
         onAddToQuote={handleAddToQuote} />
       <ShareModal producto={shareProduct} onClose={() => setShareProduct(null)}
         onToast={showToast} company={company} />
-      <LoginModal show={showLogin} onClose={() => setShowLogin(false)}
-        onLogin={() => { setIsStaff(true); setShowLogin(false); showToast('Sesión iniciada'); }}
-        password={staffPassword} />
+      {editing && isStaff && (
+        <ProductEditor key={editing.id} producto={editing} ficha={fichas[editing.id]}
+          categories={data.categorias} onClose={() => setEditing(null)}
+          onSaved={handleSaved} onToast={showToast} />
+      )}
+      <LoginModal show={showLogin} onClose={() => setShowLogin(false)} onLogin={handleLogin} />
       <Toast message={toast.message} show={toast.show} />
     </div>
   );
