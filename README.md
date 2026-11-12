@@ -32,6 +32,16 @@ Con la sesión iniciada el equipo puede:
 
 La pestaña `Fichas` **no debe publicarse en la web**.
 
+## 📱 Instalar como aplicación
+
+La app se puede instalar en celulares y computadores (PWA). Al final de la página está el botón **Instalar aplicación**:
+
+- **Android y Chrome/Edge en computador:** el botón abre el diálogo de instalación.
+- **iPhone/iPad:** abrir en Safari → Compartir → "Agregar a inicio".
+- **Safari en Mac:** Archivo → "Agregar al Dock".
+
+Archivos: `manifest.webmanifest`, `sw.js` e `icons/`. El service worker solo guarda los archivos de la app; los datos siempre se leen de la red.
+
 ## ⚙️ Apps Script
 
 El código del servidor está en `apps-script/Code.gs`. Para actualizarlo: pegarlo en Extensiones → Apps Script, ejecutar `setup` una vez y publicar una **nueva versión** de la implementación existente (así se conserva la URL).

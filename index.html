@@ -8,6 +8,14 @@
 
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect x='4' y='4' width='92' height='92' rx='18' fill='%230F1E3D'/><text x='50' y='62' text-anchor='middle' font-family='serif' font-weight='700' font-size='42' fill='%23C9A449' letter-spacing='2'>IE</text><line x1='32' y1='76' x2='68' y2='76' stroke='%23C9A449' stroke-width='2'/></svg>" />
 
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#0F1E3D" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="InverElite" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -51,6 +59,18 @@
       <div style="font-family: 'Fraunces', serif; color: #0F1E3D; font-size: 18px;">Cargando InverElite...</div>
     </div>
   </div>
+  <script>
+    // App instalable: registra el service worker y guarda el aviso de instalación
+    // por si el navegador lo lanza antes de que cargue la app.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+    }
+    window.addEventListener('beforeinstallprompt', function (e) {
+      e.preventDefault();
+      window.__installPrompt = e;
+      window.dispatchEvent(new Event('inverelite-install-ready'));
+    });
+  </script>
   <script src="config.js"></script>
   <script type="text/babel" data-presets="react" src="app.js"></script>
 </body>
