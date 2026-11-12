@@ -59,6 +59,7 @@ const Search = makeIcon('Search'), Package = makeIcon('Package'),
   Leaf = makeIcon('Leaf'), Heart = makeIcon('Heart'),
   Shield = makeIcon('Shield'), Zap = makeIcon('Zap'),
   Box = makeIcon('Box'), RefreshCw = makeIcon('RefreshCw'),
+  Smartphone = makeIcon('Smartphone'),
   Pencil = makeIcon('Pencil'), Camera = makeIcon('Camera'),
   EyeOff = makeIcon('EyeOff'), ClipboardList = makeIcon('ClipboardList');
 
@@ -744,6 +745,57 @@ function ProductDetail({ producto, categories, config, isStaff, ficha, onEdit, o
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Instalar como aplicación (PWA)
+function InstallApp() {
+  const [prompt, setPrompt] = useState(window.__installPrompt || null);
+  const [installed, setInstalled] = useState(
+    window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true);
+  const [ayuda, setAyuda] = useState(false);
+
+  useEffect(() => {
+    const ready = () => setPrompt(window.__installPrompt || null);
+    const done = () => { setInstalled(true); setPrompt(null); window.__installPrompt = null; };
+    window.addEventListener('inverelite-install-ready', ready);
+    window.addEventListener('appinstalled', done);
+    return () => {
+      window.removeEventListener('inverelite-install-ready', ready);
+      window.removeEventListener('appinstalled', done);
+    };
+  }, []);
+
+  if (installed) return null;
+
+  const ua = navigator.userAgent;
+  const esIOS = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const esSafariMac = /Macintosh/.test(ua) && /Safari/.test(ua) && !/Chrome|Chromium|Edg/.test(ua) && !esIOS;
+
+  const instalar = async () => {
+    if (!prompt) { setAyuda(a => !a); return; }
+    prompt.prompt();
+    try { await prompt.userChoice; } catch (e) { /* cancelado */ }
+    window.__installPrompt = null; setPrompt(null);
+  };
+
+  const pasos = esIOS
+    ? 'En iPhone o iPad: abre esta página en Safari, toca Compartir y elige "Agregar a inicio".'
+    : esSafariMac
+      ? 'En Safari para Mac: menú Archivo → "Agregar al Dock".'
+      : 'En Chrome o Edge: abre el menú del navegador (⋮) y elige "Instalar InverElite" o "Agregar a pantalla de inicio".';
+
+  return (
+    <div className="mt-4">
+      <button onClick={instalar}
+        className="px-3 py-2 rounded-lg text-xs font-medium inline-flex items-center gap-2"
+        style={{ backgroundColor: C.navyDeep, color: C.paper }}>
+        <Smartphone size={14} /> Instalar aplicación
+      </button>
+      {ayuda && !prompt && (
+        <p className="text-xs mt-2 max-w-xs" style={{ color: C.muted }}>{pasos}</p>
+      )}
     </div>
   );
 }
@@ -2382,6 +2434,7 @@ function App() {
               <p className="text-xs mt-3" style={{ color: C.muted }}>
                 {company.razonSocial}<br />{company.email}
               </p>
+              <InstallApp />
             </div>
             <div className="text-xs" style={{ color: C.muted }}>
               <div style={{ fontFamily: "'Fraunces', serif", fontStyle: 'italic', color: C.navy }}>
