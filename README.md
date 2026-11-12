@@ -66,8 +66,8 @@ Para cambios de productos/precios, **edita el Google Sheet** — no requiere mod
 
 ## 📦 Tecnologías
 
-- React 18 (vía CDN)
-- Tailwind CSS (vía CDN)
+- React 18 (copia local en `vendor/`)
+- Tailwind CSS (copia local en `vendor/`)
 - Babel Standalone (compila JSX en el navegador)
 - PapaParse (lee los CSVs de Google Sheets)
 - Lucide React (íconos)
